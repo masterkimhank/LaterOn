@@ -38,6 +38,19 @@ node scripts/release.js --publish            # 3) 测试 → 打包 → 打 tag 
 
 想先看结果不发版，去掉 `--publish`：它照样跑测试和打包，只是不打 tag、不推送。
 
+**补建 / 重发 Release**：tag 推上去了但 Release 没建成（断网、gh 报错），重跑时用 `--tag` 复用那个 tag，
+不要让它自动算新序号：
+
+```bash
+node scripts/release.js --publish --skip-test --tag v1.73.0-my.1
+```
+
+已经存在同名 Release 时脚本会直接拦下并给出删除命令，不会悄悄建出第二个。
+
+**为什么全程显式 `--repo`**：本地同时有 `origin`（你的 fork）和 `upstream`（作者仓库）时，`gh` 会自己猜，
+实测猜成了 `gaoyiiiii/LaterOn` 并报「tag 没推到上游仓库」。脚本现在从 `origin` 解析出 `owner/repo`，
+每条 gh 命令都带上，不靠猜。
+
 ## 三、包里有什么、没有什么
 
 `scripts/build-release.py` 用**显式白名单**（`RUNTIME_FILES`），不是「排除某些文件」。
@@ -52,9 +65,17 @@ node scripts/release.js --publish            # 3) 测试 → 打包 → 打 tag 
 
 ## 四、Release 页面长什么样
 
+已发布的一个实例：<https://github.com/masterkimhank/LaterOn/releases/tag/v1.72.1-my.1>
+
 标题：`1.73.0（二次开发版）`
-正文：CHANGELOG 对应段落（脚本自动写入）
+正文：CHANGELOG 对应段落 + 安装说明（脚本自动写入）
 附件：`LaterOn-1.73.0.zip`
+
+下载链接可以长期引用，格式固定：
+
+```
+https://github.com/masterkimhank/LaterOn/releases/download/<tag>/LaterOn-<版本>.zip
+```
 
 想让别人装：
 
@@ -87,3 +108,5 @@ node scripts/release.js --publish            # 3) 测试 → 打包 → 打 tag 
 | `Release build failed: Manifest references files outside the release allowlist` | manifest 引用了新文件但没进白名单 | 加进 `RUNTIME_FILES` |
 | `推送失败：... handshake failure` | 代理节点抖动 | 脚本会自动重试 3 次；仍失败就手动 `git push` |
 | `gh 没登录` | token 过期 | `gh auth login` |
+| `tag ... has not been pushed to gaoyiiiii/LaterOn` | gh 把目标仓库猜成了上游 | 加 `--repo masterkimhank/LaterOn`（脚本已内置，手动敲 gh 时才会遇到） |
+| `已有 v1.x.y-my.N 的 Release` | 重复发同一 tag | 换新版本号，或先 `gh release delete <tag> --repo masterkimhank/LaterOn --yes` |

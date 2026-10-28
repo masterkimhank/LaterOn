@@ -7,6 +7,10 @@
  *   node scripts/release.js --version 1.73.0     把 manifest 版本升上去，再校验打包
  *   node scripts/release.js --publish            真正发版：tag + push + gh release
  *   node scripts/release.js --publish --skip-test  跳过测试（不推荐）
+ *   node scripts/release.js --publish --tag v1.73.0-my.1  复用已有 tag（Release 建失败后重发）
+ *
+ * 发布目标固定取 origin，全程显式 --repo：本地同时有 origin 和 upstream 时，
+ * gh 会自己猜成上游（作者的仓库）。
  *
  * 它拦的是发版最容易出的四类错：
  *   1) manifest 版本和 CHANGELOG 段落对不上
@@ -53,6 +57,16 @@ function ghBinary() {
     if (fs.existsSync(candidate)) return candidate;
   }
   return null;
+}
+
+// gh 默认按 remote 猜仓库，本地同时存在 origin 和 upstream 时会猜成上游（作者的仓库），
+// 结果报「tag 没推到 gaoyiiiii/LaterOn」。所以所有 gh 命令一律显式 --repo。
+function repoSlug() {
+  const url = run("git", ["remote", "get-url", "origin"]).out.trim();
+  if (!url) fail("没有 origin 远程，不知道该发到哪个仓库（git remote add origin ...）");
+  const m = url.match(/github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?$/) || url.match(/github\.com[:/]([^/]+)\/([^/]+)/);
+  if (!m) fail(`看不懂 origin 地址：${url}`);
+  return `${m[1]}/${m[2].replace(/\.git$/, "")}`;
 }
 
 // ── 1. 读版本 ────────────────────────────────────────────
@@ -128,13 +142,23 @@ const zipKb = (fs.statSync(zipPath).size / 1024).toFixed(1);
 // ── 5. tag（本地已存在同版本 tag 时自动接 .2 / .3）───────
 const tags = run("git", ["tag", "-l", `v${version}-my.*`]).out.split("\n").filter(Boolean);
 const nextSeq = tags.reduce((max, t) => Math.max(max, Number(t.split(".").pop()) || 0), 0) + 1;
-const tag = `v${version}-my.${nextSeq}`;
+const forcedTag = arg("tag");
+let tag = `v${version}-my.${nextSeq}`;
+if (forcedTag && forcedTag !== true) {
+  // 复用已有 tag：适用于「tag 推过了、但 Release 没建成功 / 忘了挂包」的情况
+  if (!run("git", ["rev-parse", "--verify", `refs/tags/${forcedTag}`]).ok) {
+    fail(`本地没有 tag ${forcedTag}`);
+  }
+  tag = forcedTag;
+}
+const tagExists = run("git", ["rev-parse", "--verify", `refs/tags/${tag}`]).ok;
 
 console.log(`\n${"=".repeat(52)}`);
 console.log(`版本   ${version}`);
 console.log(`分支   ${branch}`);
 console.log(`产物   dist/LaterOn-${version}.zip（${zipKb} KB）`);
-console.log(`标签   ${tag}${tags.length ? `（已有 ${tags.join(", ")}）` : ""}`);
+console.log(`标签   ${tag}${tagExists ? "（已存在，复用它）" : tags.length ? `（同版本已有 ${tags.join(", ")}）` : ""}`);
+console.log(`仓库   ${repoSlug()}`);
 
 if (!has("publish")) {
   console.log(`\n这只是演练。确认无误后发版：`);
@@ -150,9 +174,21 @@ if (!run(gh, ["auth", "status"]).ok) fail("gh 没登录：先在终端跑 gh aut
 const noteFile = path.join(os.tmpdir(), `lateron-release-${version}.md`);
 fs.writeFileSync(noteFile, `## 本版改动\n\n${notes}\n`, "utf8");
 
+const slug = repoSlug();
+
+// 同名 Release 已存在就别重复建，否则 gh 会报一个很难懂的错误
+const existing = run(gh, ["release", "view", tag, "--repo", slug, "--json", "url"]);
+if (existing.ok) {
+  fail(`仓库 ${slug} 上已有 ${tag} 的 Release：\n${existing.out}\n要重发先删：gh release delete ${tag} --repo ${slug} --yes`);
+}
+
 console.log("\n· 打 tag…");
-const tagResult = run("git", ["tag", "-a", tag, "-m", `LaterOn ${version}（基于上游 ${version} 的二次开发版）`]);
-if (!tagResult.ok) fail(`打 tag 失败：${tagResult.out}`);
+if (tagExists) {
+  console.log(`  ${tag} 已存在，直接复用`);
+} else {
+  const tagResult = run("git", ["tag", "-a", tag, "-m", `LaterOn ${version}（基于上游 ${version} 的二次开发版）`]);
+  if (!tagResult.ok) fail(`打 tag 失败：${tagResult.out}`);
+}
 
 console.log("· 推送分支与 tag…");
 for (const args of [["push", "origin", branch], ["push", "origin", tag]]) {
@@ -171,6 +207,7 @@ for (const args of [["push", "origin", branch], ["push", "origin", tag]]) {
 console.log("· 创建 GitHub Release…");
 const rel = run(gh, [
   "release", "create", tag, zipPath,
+  "--repo", slug,
   "--title", `${version}（二次开发版）`,
   "--notes-file", noteFile,
 ]);
