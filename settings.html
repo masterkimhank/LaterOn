@@ -79,6 +79,10 @@
             <label class="switch"><input type="checkbox" data-setting="askFolderOnBatch" /><span class="slider"></span></label>
           </div>
           <div class="setting-row">
+            <div class="setting-label"><strong data-i18n="closeTabsOnDelete">删除网页时，同时关闭已打开的标签页</strong><span data-i18n="closeTabsOnDeleteHint">默认关闭；打开后，删除一条收藏会把这个网址在浏览器里还开着的标签页一起关掉，删除确认框会先写明要关几个</span></div>
+            <label class="switch"><input type="checkbox" data-setting="closeTabsOnDelete" /><span class="slider"></span></label>
+          </div>
+          <div class="setting-row">
             <div class="setting-label"><strong data-i18n="autoClean">已读网页自动清除</strong><span data-i18n="autoCleanHint">标记为已读后多少天自动删除（从标为已读那天算起），最短 30 天、最长 180 天，默认 30 天</span></div>
             <div class="setting-days">
               <input class="setting-number" type="number" min="30" max="180" step="1" data-setting="autoCleanDays" data-i18n-aria-label="autoCleanDaysLabel" aria-label="已读网页自动清除天数" />

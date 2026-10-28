@@ -128,6 +128,12 @@ const menuItems = () => [...document.querySelectorAll(".folder-menu .folder-menu
 const menuItem = (label) => menuItems().find((item) => item.textContent === label);
 const toastText = () => document.querySelector("#toast").textContent;
 const cardFolderOptions = () => [...document.querySelectorAll(".card .project-select")]
+  .map((select) => {
+    // 下拉选项是懒填的（性能优化）：只有用户真的去点才铺满全部项目。
+    // 测试里读 options 之前先模拟一次 focus，触发懒填，读到的才是完整列表。
+    select.dispatchEvent(new window.Event("focus"));
+    return select;
+  })
   .flatMap((select) => [...select.options].map((option) => option.textContent));
 
 (async () => {
@@ -224,7 +230,7 @@ const cardFolderOptions = () => [...document.querySelectorAll(".card .project-se
   rightClick(rowOf("work").querySelector(".project-nav"));
   await tick(10);
   check("右键弹出菜单", !!document.querySelector(".folder-menu"));
-  check("菜单里是「置顶项目 / 重命名 / 编辑简介 / 归档项目 / 删除项目」", menuItems().map((item) => item.textContent).join(" / ") === "置顶项目 / 重命名 / 编辑简介 / 归档项目 / 删除项目", menuItems().map((i) => i.textContent).join(" / "));
+  check("菜单里是「置顶项目 / 重命名 / 编辑简介 / 关闭已打开的标签页 / 归档项目 / 删除项目」", menuItems().map((item) => item.textContent).join(" / ") === "置顶项目 / 重命名 / 编辑简介 / 关闭已打开的标签页 / 归档项目 / 删除项目", menuItems().map((i) => i.textContent).join(" / "));
   check("菜单顶部标着项目名", document.querySelector(".folder-menu-title")?.textContent === "工作与灵感");
   pointerdown(document.body);
   await tick(10);

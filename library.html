@@ -27,11 +27,20 @@
           <button class="nav-item" data-filter="done" data-i18n="read">已读</button>
           <button class="nav-item" data-filter="all" data-i18n="all">全部</button>
         </nav>
-        <label class="search">
+        <!-- 搜索框自带一个范围开关：默认「全部」= 全局搜索（在哪个项目里搜都能搜到别处，
+             这样人在某个项目里搜一个明明存在的标题不会一无所获）；
+             拨到「等待整理」就只在这一堆还没归类的条目里找，结果不会跑出这个范围。
+             这里用 div 而不是 label：里面多了两个按钮，label 会把按钮上的点击
+             转发给输入框，点开关会顺手把光标塞进搜索框，行为很怪。 -->
+        <div class="search" id="searchBox" role="search">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.3-4.3m2.3-5.2a7.5 7.5 0 1 1-15 0 7.5 7.5 0 0 1 15 0Z"/></svg>
-          <input id="searchInput" type="search" data-i18n-placeholder="search" placeholder="搜索网页" autocomplete="off" />
+          <input id="searchInput" type="search" data-i18n-placeholder="search" data-i18n-aria-label="search" placeholder="搜索网页" aria-label="搜索网页" autocomplete="off" />
+          <div class="search-scope" role="group" data-i18n-aria-label="searchScopeAria" aria-label="搜索范围">
+            <button type="button" class="scope-option active" data-scope="all" data-i18n="searchScopeAll" aria-pressed="true">全部</button>
+            <button type="button" class="scope-option" data-scope="unfiled" data-i18n="searchScopeInbox" aria-pressed="false">等待整理</button>
+          </div>
           <kbd>⌘ K</kbd>
-        </label>
+        </div>
       </header>
 
       <div class="workspace">
@@ -112,6 +121,9 @@
             <button id="selectMode" type="button" class="select-mode" data-i18n="select">选择</button>
           </div>
           <div class="collection-right">
+            <!-- 关掉「这个项目里已打开的标签页」，但一条收藏都不删。
+                 只在单个项目（含等待整理）里出现：全部项目/归档不是单个项目，范围说不清。 -->
+            <button id="closeProjectTabs" type="button" class="close-tabs" data-i18n="closeProjectTabs" data-i18n-title="closeProjectTabsHint" title="关闭这个项目里已打开的标签页（收藏不会删除）">关闭已打开</button>
             <!-- 全部项目固定是图板视图，待整理 / 单个项目是卡片视图，不再需要手动切换 -->
             <select id="sortSelect" data-i18n-aria-label="sortAria" aria-label="排序方式">
               <option value="newest" data-i18n="sortNewest">最近添加</option>
@@ -148,6 +160,9 @@
         <div class="card-body">
           <div class="source-row"><img class="favicon" alt="" referrerpolicy="no-referrer" /><span class="source-name"></span><span class="dot">·</span><time></time></div>
           <a class="title-link" target="_blank" rel="noreferrer"><h2></h2></a>
+          <!-- 收藏那一刻浏览器里显示的标题：只有和现在的标题不一样时才出现，
+               用来帮用户回忆「当初点开的是什么」 -->
+          <p class="title-at-save" hidden></p>
           <p class="description"></p>
           <footer>
             <button class="read-toggle" data-i18n-title="readStateAria" title="切换阅读状态"></button>

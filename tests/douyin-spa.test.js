@@ -56,6 +56,12 @@ const REAL_SOURCE = [
   grabFunction(BACKGROUND, "probeDouyinFreshness"),
   grabFunction(BACKGROUND, "settleDouyinDom"),
   grabFunction(BACKGROUND, "isIconLikeImage"),
+  // 服务端兜底会按站点声明的编码解码 HTML（GBK 站点用），这几个是它的依赖。
+  grabConst(BACKGROUND, "CHARSET_ALIASES"),
+  grabFunction(BACKGROUND, "charsetFromContentType"),
+  grabFunction(BACKGROUND, "charsetFromHtmlHead"),
+  grabFunction(BACKGROUND, "decodeHtmlBuffer"),
+  grabFunction(BACKGROUND, "looksMojibake"),
   grabFunction(BACKGROUND, "refetchMetaFromServer"),
   grabFunction(BACKGROUND, "isPlaceholderText"),
   grabFunction(BACKGROUND, "titleHasSiteNoise"),

@@ -58,6 +58,8 @@ const BACKGROUND_SOURCE = [
   grabConst(BACKGROUND, "DOUYIN_SETTLE_MS"),
   grabConst(BACKGROUND, "DOUYIN_POLL_MS"),
   grabConst(BACKGROUND, "SERVER_META_TIMEOUT_MS"),
+  // 服务端兜底会按站点声明的编码解码 HTML（GBK 站点用），这几个是它的依赖。
+  grabConst(BACKGROUND, "CHARSET_ALIASES"),
   grabFunction(BACKGROUND, "withTimeout"),
   grabFunction(BACKGROUND, "safeHostname"),
   grabFunction(BACKGROUND, "isDouyinUrl"),
@@ -65,6 +67,12 @@ const BACKGROUND_SOURCE = [
   grabFunction(BACKGROUND, "probeDouyinFreshness"),
   grabFunction(BACKGROUND, "settleDouyinDom"),
   grabFunction(BACKGROUND, "isIconLikeImage"),
+  grabFunction(BACKGROUND, "charsetFromContentType"),
+  grabFunction(BACKGROUND, "charsetFromHtmlHead"),
+  grabFunction(BACKGROUND, "decodeHtmlBuffer"),
+  grabFunction(BACKGROUND, "looksMojibake"),
+  grabFunction(BACKGROUND, "isSolidTitle"),
+  grabFunction(BACKGROUND, "looksGoneTitle"),
   grabFunction(BACKGROUND, "refetchMetaFromServer"),
   grabFunction(BACKGROUND, "applyServerMetaRescue"),
   grabFunction(BACKGROUND, "isPlaceholderText"),
@@ -111,6 +119,10 @@ function makeBareSandbox(extra = {}) {
     // Service Worker 里有 URL / clearTimeout，裸沙盒里没有，得手动补齐。
     URL,
     URLSearchParams,
+    // 解码 HTML 字节要用：Service Worker 里是全局内置的，裸沙盒得手动补。
+    TextDecoder,
+    TextEncoder,
+    Uint8Array,
     setTimeout,
     clearTimeout,
     console,
@@ -136,12 +148,19 @@ function makeSandbox({ injected, serverHtml, tab }) {
     // Service Worker 里有 URL / clearTimeout，裸沙盒里没有，得手动补齐。
     URL,
     URLSearchParams,
+    // 解码 HTML 字节要用：Service Worker 里是全局内置的，裸沙盒得手动补。
+    TextDecoder,
+    TextEncoder,
+    Uint8Array,
     fetch: async (url) => {
       state.fetches.push(String(url));
+      const body = serverHtml || "";
       return {
         ok: true,
         headers: { get: () => (serverHtml ? "text/html" : "application/json") },
-        text: async () => serverHtml || ""
+        // 后台现在读字节再按站点编码解码（GBK 站点），所以这里也要提供 arrayBuffer。
+        arrayBuffer: async () => new TextEncoder().encode(body).buffer,
+        text: async () => body
       };
     },
     setTimeout,

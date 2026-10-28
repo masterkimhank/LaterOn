@@ -48,6 +48,7 @@ let filter = DEFAULT_FILTER;
 let query = "";
 let activeProject = "unfiled";
 let autoMarkRead = true;   // 点开文章是否自动标记为「在读」（与设置页同步）
+let closeTabsOnDelete = false; // 删除收藏时是否顺带关掉还开着的同一网页（设置页里开，默认关）
 let sortMode = "newest";   // 全屏那边的排序方式（只有 custom 会影响这里的先后顺序）
 let orders = {};           // 用户拖出来的自定义顺序（与全屏共享：{ 范围: [收藏 id] }）
 let covers = {};           // 用户上传的封面：{ 收藏 id: dataURL }（与 COVERS_KEY 对应）
@@ -344,6 +345,7 @@ async function init() {
   activeProject = normalizeProject(stored[ACTIVE_PROJECT_KEY]);
   currentItemId = stored[CURRENT_ITEM_KEY] || null;
   autoMarkRead = (stored[SETTINGS_KEY] || {}).autoMarkRead !== false;
+  closeTabsOnDelete = (stored[SETTINGS_KEY] || {}).closeTabsOnDelete === true;
   sortMode = (stored[SETTINGS_KEY] || {}).defaultSort || "newest";
   orders = stored[ORDER_KEY] || {};
   // 全屏那边可能已经切过筛选了，打开侧栏时接着用同一档。
@@ -369,8 +371,21 @@ async function init() {
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes[STORAGE_KEY]) {
-    items = normalizeItems(changes[STORAGE_KEY].newValue || []);
-    render();
+    const next = normalizeItems(changes[STORAGE_KEY].newValue || []);
+    // 增量：纯展示字段变化且无增删时只更新受影响卡片，否则全量 render。
+    const diff = diffItemsForIncremental(items, next);
+    items = next;
+    if (diff.safe && diff.changedIds.size > 0) {
+      for (const id of diff.changedIds) {
+        const article = itemMap.get(id);
+        if (article) {
+          const item = items.find((entry) => entry.id === id);
+          if (item) updateItemCard(article, item);
+        }
+      }
+    } else {
+      render();
+    }
     renderProjectFilters();
     // 阅读状态等数据刷新不能按旧标签页覆盖用户刚选择的项目。
     if (currentItem?.url) syncCurrentTabItem(currentItem.url, { followProject: false });
@@ -394,6 +409,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes[SETTINGS_KEY]) {
     const s = changes[SETTINGS_KEY].newValue || {};
     if (typeof s.autoMarkRead === "boolean") autoMarkRead = s.autoMarkRead;
+    if (typeof s.closeTabsOnDelete === "boolean") closeTabsOnDelete = s.closeTabsOnDelete;
     const nextSort = s.defaultSort || "newest";
     if (nextSort !== sortMode) { sortMode = nextSort; render(); }
   }
@@ -964,7 +980,8 @@ function render() {
       || (activeProject === "unfiled" ? !item.projectId : item.projectId === activeProject);
     // 「未读」= 还没读完（未读 + 在读）；「已读」= 手动标完成的那批。
     const matchesFilter = filter === "all" || (filter === "done" ? item.status === "done" : item.status !== "done");
-    const text = `${item.title} ${item.description} ${item.source}`.toLowerCase();
+    // 「收藏时的原标题」也参与搜索：标题被网站改掉后，用户记住的往往还是当初那一条。
+    const text = `${item.title} ${item.titleAtSave || ""} ${item.description} ${item.source}`.toLowerCase();
     return matchesProject && matchesFilter && (!query || text.includes(query));
   });
   // 全屏那边选了「自定义顺序」并拖过卡片 —— 侧栏用同一份顺序，两边看到的先后一致。
@@ -1029,13 +1046,31 @@ function finishRender(token) {
 // 高亮「正在读」的那篇，并保证它落在可视区域里（只在该视图还活着时调用）。
 // 分两步：卡片已经画出来就立刻定位（快路径）；还没画到 / 列表没铺完，
 // 就挂一个定位任务，等整张列表画完（finishRender）再定位。
+// 以前每次 currentItem 变化都把整张列表扫一遍；真正会变的只有两张卡，只动这两张。
+let lastCurrentArticleId = null;
 function applyCurrentAndLocate() {
   // 当前文章变了，上一篇的延迟复查也必须作废，否则会把新定位抢回去。
   clearTimeout(locateTimer);
-  for (const [id, article] of itemMap) {
-    article.dataset.currentLabel = tr("currentReading");
-    article.classList.toggle("is-current", id === currentItemId);
+  const label = tr("currentReading");
+  const prev = lastCurrentArticleId;
+  const next = currentItemId || null;
+  // 幂等写法（和 library.js 对齐）。侧栏目前**不会**丢高亮，因为 renderSlice()
+  // 每画一条都会顺带写一次 `is-current`；但那是隐式依赖——哪天有人觉得那两行
+  // 「和这里重复」把它删了，就会退化成真 bug：renderSlice 开头会把不在可见集合里的
+  // 条目 remove() + itemMap.delete()，切筛选再切回来是新节点（不带 is-current），
+  // 而 currentItemId 没变，`prev !== next` 为假就整段跳过了。
+  // 这里写成「值没变就不重复写」，两种情况都对。tests/panel-current-highlight.test.js 是护栏。
+  if (prev && prev !== next && itemMap.has(prev)) {
+    const old = itemMap.get(prev);
+    if (old.dataset.currentLabel) delete old.dataset.currentLabel;
+    old.classList.remove("is-current");
   }
+  const cur = next ? itemMap.get(next) : null;
+  if (cur) {
+    if (cur.dataset.currentLabel !== label) cur.dataset.currentLabel = label;
+    if (!cur.classList.contains("is-current")) cur.classList.add("is-current");
+  }
+  lastCurrentArticleId = next;
   pendingLocate = Boolean(currentItemId);
   if (!pendingLocate) return;
   locateCurrent();
@@ -1210,6 +1245,30 @@ function normalizeItems(list) {
   });
 }
 
+// ── 增量更新 ────────────────────────────────────────────────
+// 与全屏页同款：只有「纯展示字段」变化且无增删时，只更新受影响的卡片。
+const COLLECTION_AFFECTING_FIELDS = ["status", "projectId", "savedAt", "source", "read"];
+function diffItemsForIncremental(oldList, newList) {
+  if (!Array.isArray(oldList) || !Array.isArray(newList)) return { safe: false };
+  if (oldList.length !== newList.length) return { safe: false };
+  const changedIds = new Set();
+  const newById = new Map(newList.map((item) => [item.id, item]));
+  for (const oldItem of oldList) {
+    if (!oldItem || oldItem.id == null) return { safe: false };
+    const next = newById.get(oldItem.id);
+    if (!next) return { safe: false };
+    for (const key of COLLECTION_AFFECTING_FIELDS) {
+      if (oldItem[key] !== next[key]) return { safe: false };
+    }
+    let changed = false;
+    for (const key of new Set([...Object.keys(oldItem), ...Object.keys(next)])) {
+      if (oldItem[key] !== next[key]) { changed = true; break; }
+    }
+    if (changed) changedIds.add(oldItem.id);
+  }
+  return { safe: true, changedIds };
+}
+
 // ── 封面取值 ────────────────────────────────────────────────
 // item.image 里存的可能是三种东西：
 //   ① 远程图片网址（自动抓取的）——直接用
@@ -1302,6 +1361,7 @@ function applyThumb(article, item) {
     image.src = src;
     image.alt = "";
     image.loading = "lazy";
+    image.decoding = "async";
     image.addEventListener("error", () => {
       const fallback = nextCoverFallback(image.src);
       if (fallback) image.src = fallback;
@@ -1315,6 +1375,24 @@ function applyThumb(article, item) {
   }
 }
 
+// 「收藏时看到的标题」那一行：只在这一版和现在的标题确实不同时才显示。
+// （网站改了标题、或视频下架变成一句失效提示时，用户记住的往往是当初那一条。）
+function titleAtSaveText(item) {
+  const then = String(item?.titleAtSave || "").trim();
+  const now = String(item?.title || "").trim();
+  if (!then || then === now || then.length < 2) return "";
+  if (/^https?:\/\//i.test(then)) return "";
+  if (/^[a-z0-9-]+(\.[a-z]{2,}){1,2}$/i.test(then)) return "";
+  return tr("titleAtSaveLine", { title: then });
+}
+
+function syncTitleAtSave(element, item) {
+  if (!element) return;
+  const text = titleAtSaveText(item);
+  setText(element, text);
+  element.hidden = !text;
+}
+
 function createItem(item) {
   const fragment = template.content.cloneNode(true);
   const article = fragment.querySelector(".item");
@@ -1323,11 +1401,14 @@ function createItem(item) {
   const openLink = fragment.querySelector(".open-item");
   openLink.href = safeTarget(item.url) || "#";
   fragment.querySelector("h2").textContent = item.title;
+  syncTitleAtSave(fragment.querySelector(".title-at-save"), item);
   setText(fragment.querySelector(".description"), item.description);
   fragment.querySelector(".source").textContent = item.source;
   fragment.querySelector("time").textContent = formatTime(item.savedAt);
   const favicon = fragment.querySelector(".meta img");
   favicon.src = item.favicon;
+  favicon.loading = "lazy";
+  favicon.decoding = "async";
   favicon.addEventListener("error", () => { favicon.style.visibility = "hidden"; });
   applyThumb(article, item);
   article.classList.toggle("is-read", item.status === "done");
@@ -1354,6 +1435,7 @@ function updateItemCard(article, item) {
   }
   // 卡片 DOM 是复用的，不同步的话改完标题/摘要会一直显示旧文字。
   setText(article.querySelector("h2"), item.title);
+  syncTitleAtSave(article.querySelector(".title-at-save"), item);
   setText(article.querySelector(".description"), item.description);
   article.querySelector(".open-item").href = safeTarget(item.url) || "#";
   applyThumb(article, item);
@@ -1503,19 +1585,39 @@ async function deleteItem(id) {
   const title = raw.length > 26 ? `${raw.slice(0, 26)}…` : raw;
   try { await ensureDialogLoaded(); }
   catch { status.textContent = tr("operationFailed"); return; }
+  // 开了「删除时关掉已开的标签页」，先把要关几个数出来写进确认框：
+  // 这一条很可能就是用户此刻正在读的那一页，先说清楚再动手。
+  const openTabs = closeTabsOnDelete
+    ? (await globalThis.LaterOnTabs?.matches?.([target]))?.length || 0
+    : 0;
   const confirmed = await window.LaterOnDialog.confirm({
     tone: "danger", title: tr("deleteItemTitle", { title }),
-    message: tr("deleteCannotUndo"), confirmText: tr("delete")
+    message: openTabs ? `${tr("deleteCannotUndo")} ${tr("deleteWillCloseTabs", { n: openTabs })}` : tr("deleteCannotUndo"),
+    confirmText: tr("delete")
   });
   if (!confirmed) return;
-  await commitItemMutation("delete", [id]);
+  if (!await commitItemMutation("delete", [id])) return;
+  // 侧栏用顶部状态条报结果（它没有全屏那套 toast），关掉标签页这件事也要说一声。
+  if (!closeTabsOnDelete) return;
+  const closed = (await globalThis.LaterOnTabs?.closeMatching?.([target])) || 0;
+  if (closed) status.textContent = tr("itemDeletedAndClosed", { n: closed });
 }
 
+// 30 天以前的时间用 Intl 格式化；按语言缓存实例，别每张卡 new 一次。
+const dateTimeFormatters = new Map();
+function shortDateFormatter(lang) {
+  let fmt = dateTimeFormatters.get(lang);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat(lang, { month: "short", day: "numeric" });
+    dateTimeFormatters.set(lang, fmt);
+  }
+  return fmt;
+}
 function formatTime(timestamp) {
   const days = Math.floor((Date.now() - timestamp) / 86400000);
   if (days < 1) return tr("today");
   if (days < 30) return tr("daysAgo", { n: days });
-  return new Intl.DateTimeFormat(document.documentElement.lang === "en" ? "en" : "zh-CN", { month: "short", day: "numeric" }).format(timestamp);
+  return shortDateFormatter(document.documentElement.lang === "en" ? "en" : "zh-CN").format(timestamp);
 }
 
 // YouTube 的最大分辨率封面（maxresdefault）对部分视频并不存在，

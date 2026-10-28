@@ -44,7 +44,11 @@ main { padding:14px 13px 30px; }
 .project-filter strong { color:var(--subtle); font-size:8px; font-weight:600; }
 .project-filter.active strong { color:rgba(255,255,255,.6); }
 .items { display:flex; flex-direction:column; gap:8px; }
-.item { position:relative; overflow:hidden; border:1px solid var(--line); border-radius:12px; background:var(--card); transition:border-color .15s, transform .15s; }
+.item { position:relative; overflow:hidden; border:1px solid var(--line); border-radius:12px; background:var(--card); transition:border-color .15s, transform .15s;
+  /* 屏外条目跳过布局绘制（同完整界面的卡片）。估算值按实际构成算：
+     .copy 上下 padding 19 + 来源行 14 + 标题两行 46 + 摘要两行 28 ≈ 107，加边框取 108。
+     填太小会让长列表的滚动条长度偏短，滚动时一截一截变长。 */
+  content-visibility:auto; contain-intrinsic-size:auto 108px; }
 .item:hover { border-color:var(--subtle); transform:translateY(-1px); }
 .items.is-reordering .item { transition:transform .16s ease, opacity .16s ease, border-color .15s; }
 .items.is-reordering .item:hover { border-color:var(--line); }
@@ -80,6 +84,10 @@ main { padding:14px 13px 30px; }
 .item:hover .meta time, .item:hover .meta .dot { opacity:0; }
 .copy h2 { display:-webkit-box; overflow:hidden; margin:7px 0 5px; font-size:12px; line-height:1.4; -webkit-box-orient:vertical; -webkit-line-clamp:2; }
 .description { display:-webkit-box; overflow:hidden; margin:0; color:var(--muted); font-size:9.5px; line-height:1.45; -webkit-box-orient:vertical; -webkit-line-clamp:2; }
+/* 「收藏时：原来的标题」——网站改了标题 / 页面失效以后，留住当初看到的那一条。
+   只在与现在的标题不同时才渲染，平时不占位。 */
+.title-at-save { display:-webkit-box; overflow:hidden; margin:0 0 4px; padding-left:6px; border-left:2px solid var(--hairline); color:var(--muted); font-size:9.5px; line-height:1.45; -webkit-box-orient:vertical; -webkit-line-clamp:2; }
+.title-at-save[hidden] { display:none; }
 .edit, .delete { position:absolute; top:7px; display:grid; place-items:center; width:25px; height:25px; border:0; border-radius:7px; background:var(--glass-strong); color:var(--subtle); opacity:0; }
 /* 铅笔放回右上角（和垃圾桶一排在手边，更顺手）。代价是它会盖住右边的日期，
    所以卡片一悬停就把日期连同中间那个「·」淡出——用 opacity 而不是 display，

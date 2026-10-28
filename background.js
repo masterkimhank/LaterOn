@@ -132,7 +132,7 @@ function omniboxMatches(items, projects, text) {
     .map((item) => {
       const title = String(item.title || item.url || "");
       const project = projectNames.get(item.projectId) || "";
-      const haystack = `${title} ${item.description || ""} ${item.source || ""} ${item.url || ""} ${project}`.toLocaleLowerCase();
+      const haystack = `${title} ${item.titleAtSave || ""} ${item.description || ""} ${item.source || ""} ${item.url || ""} ${project}`.toLocaleLowerCase();
       if (words.some((word) => !haystack.includes(word))) return null;
       const loweredTitle = title.toLocaleLowerCase();
       const phrase = words.join(" ");
@@ -536,6 +536,9 @@ async function quickSave(tab, source = "shortcut") {
   const fallbackUrl = tab.url || "";
   const baseItem = {
     title: meta.title || tab.title || fallbackUrl,
+    // 收藏这一刻浏览器里显示的标题。它可能和 title 不同（服务端兜底、站点改名），
+    // 那份快照会一直在收藏库的卡片上留着，方便回忆当时看的到底是什么。
+    titleAtSave: snapshotTitleOf(meta) || tab.title || "",
     description: meta.description || "暂无摘要",
     image: meta.image || "",
     favicon: meta.favicon || tab.favIconUrl || "",
@@ -687,6 +690,86 @@ function isPlaceholderText(value, source) {
   return false;
 }
 
+// 「这段文字是不是乱码」——专门用来挡住「把好好的标题换成乱码」。
+// 典型场景：52pojie.cn 这类老论坛返回 charset=gbk，字节被当 UTF-8 解以后，
+// 中文全部塌成替换符（吾爱破解 → �ᰮ�ƽ�），历史上就会把页面里本来正确的标题覆盖掉。
+// 只认强信号，宁可漏判也不误杀正常中文：
+//  · U+FFFD 是解码失败的替换符，正常文本里不会出现；
+//  · 「锟斤拷」是 GBK/UTF-8 互转的经典残渣；
+//  · 私用区字符成片出现，基本只可能是编码错了。
+function looksMojibake(value) {
+  const text = (value || "").trim();
+  if (!text) return false;
+  if (text.includes("\uFFFD")) return true;
+  if (text.includes("锟斤拷")) return true;
+  const privateUse = text.match(/[\uE000-\uF8FF]/g);
+  return !!privateUse && privateUse.length >= 3;
+}
+
+// 入库前的最后一道闸。标题是乱码时宁可退回网址（至少能读、能认出是哪一篇），
+// 也不要把一串「�ᰮ�ƽ�」存进收藏库——那种标题既搜不到也认不出。
+function recordTitle(title, url) {
+  const text = (title || "").trim();
+  if (text && !looksMojibake(text)) return text;
+  return url || text;
+}
+
+// 一条标题值不值得留：非空、不是乱码、也不是网址 / 域名 / 导航词这类兜底值。
+// 用于两处判断：①「原来存下来的那条值不值得保住」；②「新的那条是不是更像标题」。
+function isSolidTitle(title, source) {
+  const text = (title || "").trim();
+  if (!text) return false;
+  if (looksMojibake(text)) return false;
+  return !isPlaceholderText(text, source);
+}
+
+// 「这个页面已经没了」型的标题。
+// 站点在视频下架 / 稿件被删 / 链接失效以后，会把 document.title 换成一句通用提示
+// （B 站实测就是「视频去哪了呢？」，前几天还好好的，再收藏一次就变成这句）。
+// 这类标题不携带任何信息：一旦顶掉原来那条真标题，用户就再也想不起来
+// 当初收藏的到底是什么内容了。
+// 中文只认「一看就是失效页」的固定说法；英文 / 数字类的提示额外要求
+// 「整条标题就是这句话」（允许带一个 404 前缀）——否则
+// 「Page Not Found 页面的设计要点」「404 错误页该怎么做」这种真标题会被误判。
+// 两条正则写在函数里（而不是提到模块顶层）：它们是这个函数的实现细节，
+// 外面谁也不用，测试里按函数切片跑的时候也就不用额外再捞两个常量。
+function looksGoneTitle(value) {
+  const text = (value || "").replace(/\s+/g, " ").trim();
+  if (!text) return false;
+  if (/^(404|403)$/.test(text)) return true;
+  if (/(视频去哪了|视频已失效|视频不存在|稿件不可见|稿件不存在|你访问的页面|页面不存在|页面走丢了|页面已失效|页面无法访问|内容不存在|内容已删除|内容已下架)/.test(text)) return true;
+  // 英文 / 数字类的提示只认「整条标题就是这句话」（允许带一个 404 前缀）。
+  const englishGone = /^(?:\s*(?:404|403)\s*(?:[-–—|·:：]\s*)?)?(?:page\s+not\s+found|not\s+found|this\s+page\s+isn['’]?t\s+available|this\s+page\s+is\s+not\s+available|no\s+longer\s+available|video\s+unavailable|content\s+unavailable)\s*$/i;
+  if (englishGone.test(text)) return true;
+  // 「This page isn't available - YouTube」这种带站点尾巴的，剥掉尾巴再认一次。
+  const bare = text.replace(/\s*[|·•\-–—_/]\s*[\p{Script=Han}A-Za-z0-9.]{2,20}$/u, "").trim();
+  return !!bare && bare !== text && englishGone.test(bare);
+}
+
+// 「收藏时看到的标题」——浏览器标签页上那一刻显示的那一条。
+// 优先用页面自己给的标题（提取脚本已经剥掉「_站名」这类后缀，读起来干净），
+// 退回去用标签页标题（Chrome 自己持有的那一份，页面没重新加载时就还是老标题）。
+function snapshotTitleOf(meta) {
+  if (!meta) return "";
+  return String(meta.pageTitle || meta.browserTitle || meta.title || "").trim();
+}
+
+// 标题即将被「新抓到的」内容替换之前，把原来那条留一份快照（titleAtSave）。
+// 调用时机：merge 已经把 existing.title 换成新的之后，所以旧值必须由调用方传进来。
+// 不覆盖更早的快照——第一次看到的那条，最贴近「当时我在看什么」。
+function rememberTitleBeforeReplace(existing, previousTitle) {
+  const before = (previousTitle || "").trim();
+  const after = (existing.title || "").trim();
+  if (!before || before === after) return false;
+  if (!isSolidTitle(before, existing.source)) return false;
+  const current = (existing.titleAtSave || "").trim();
+  // 已经有更早的快照：不动它。
+  if (current && !looksMojibake(current) && current !== after) return false;
+  if (current === before) return false;
+  existing.titleAtSave = before;
+  return true;
+}
+
 // 标题里混着站点名（「文章标题 - 某某网」这类）也算「不干净」，
 // 允许重复收藏时用新抓到的、更干净的标题替换掉它。
 // 两类都算：
@@ -722,10 +805,17 @@ function mergeDuplicateMetadata(existing, meta) {
   const titleLocked = existing.titleEdited === true;
   const descriptionLocked = existing.descriptionEdited === true;
 
-  // 新标题必须是个「像样的标题」才允许替换，免得把好标题换成 example.com 这种兜底值。
-  const nextTitleUsable = !!meta.title && !isPlaceholderText(meta.title, meta.source);
+  // 新标题必须是个「像样的标题」才允许替换，免得把好标题换成 example.com 这种兜底值，
+  // 也免得换成乱码（旧版抓 GBK 站点时的老毛病）。
+  const nextTitleUsable = !!meta.title && !looksMojibake(meta.title) && !isPlaceholderText(meta.title, meta.source);
+  // 新标题是「页面已经没了」的通用提示（B 站：「视频去哪了呢？」）时一律不换。
+  // 换成它等于把「当初看的是什么」直接抹掉——那比一个带站名后缀的旧标题糟得多。
+  // 老标题本身就是失效提示时（两边都烂）不拦，让正常流程照常刷新。
+  const nextTitleIsGone = looksGoneTitle(meta.title) && !looksGoneTitle(existing.title);
+  // 老标题本身是乱码时，只要新标题干净就该换掉——这条也是「重新收藏一次即修好」的入口。
+  const existingTitleBroken = looksMojibake(existing.title);
   const existingTitleWeak =
-    isPlaceholderText(existing.title, existing.source) || titleHasSiteNoise(existing.title, existing.source);
+    existingTitleBroken || isPlaceholderText(existing.title, existing.source) || titleHasSiteNoise(existing.title, existing.source);
   // 还有一种情况：新标题正好是老标题「去掉尾巴」的结果
   // （老：「富贵少爷…名场面 - 小红书」→ 新：「富贵少爷…名场面」）。
   // 这时新的一定更干净，可以放心替换。这条能覆盖那些中文站点——
@@ -736,7 +826,7 @@ function mergeDuplicateMetadata(existing, meta) {
     existing.title.length > meta.title.length &&
     existing.title.startsWith(meta.title) &&
     /^[\s|·•\-–—_/]/.test(existing.title.slice(meta.title.length));
-  if (!titleLocked && nextTitleUsable && meta.title !== existing.title && (isYouTube || existingTitleWeak || existingTitleIsNoisier)) {
+  if (!titleLocked && nextTitleUsable && !nextTitleIsGone && meta.title !== existing.title && (isYouTube || existingTitleWeak || existingTitleIsNoisier)) {
     existing.title = meta.title;
     changed = true;
   }
@@ -748,13 +838,34 @@ function mergeDuplicateMetadata(existing, meta) {
     existing.image = meta.image;
     changed = true;
   }
-  const hasNewDescription = meta.description && meta.description !== "暂无摘要";
-  const descriptionIsMissing = !existing.description || existing.description === "暂无摘要";
+  const hasNewDescription = meta.description && meta.description !== "暂无摘要" && !looksMojibake(meta.description);
+  // 摘要缺失、或者存下来的是乱码，都算「可以补」。
+  const descriptionIsMissing =
+    !existing.description || existing.description === "暂无摘要" || looksMojibake(existing.description);
   if (!descriptionLocked && hasNewDescription && meta.description !== existing.description && (isYouTube || descriptionIsMissing)) {
     existing.description = meta.description;
     changed = true;
   }
   return changed;
+}
+
+// 老数据（1.69.0 之前存的）没有「添加时的原标题」这一项，重复收藏时顺手补上。
+// 只在缺失（或存成了乱码）时补，不覆盖正常的已有值——否则用户改过标题以后，
+// 这份快照会被新抓到的标题顶掉，「按原标题找标签页」就失去意义了。
+// 值从哪来：先信「已经存下来的那条标题」（那是当初真的记下来的），
+// 只有它本身不可用（乱码 / 网址兜底值）时，才用这次抓到的页面标题补。
+// 刻意不放进 mergeDuplicateMetadata：那个函数的返回值是「内容有没有更新」，
+// 仅仅补一个匹配用的快照不该算成「这篇的信息被改过了」。
+function backfillTitleAtSave(existing, meta) {
+  if (existing.titleAtSave && !looksMojibake(existing.titleAtSave)) return false;
+  const stored = isSolidTitle(existing.title, existing.source) ? String(existing.title).trim() : "";
+  const incoming = snapshotTitleOf(meta);
+  const usable = incoming && !looksMojibake(incoming) ? incoming : "";
+  const title = stored || usable || (existing.title || "").trim();
+  if (!title) return false;
+  if (existing.titleAtSave === title) return false;
+  existing.titleAtSave = title;
+  return true;
 }
 
 // 一条收藏的信息是不是「不完整」（缺封面或摘要）。收尾时用它提醒用户哪几篇没抓全。
@@ -785,15 +896,26 @@ async function saveItem(item, options = {}) {
     // 但会把「缺的 / 明显过期的」信息补上（YouTube 一律刷新，见 mergeDuplicateMetadata）。
     if (index >= 0) {
       const existing = items[index];
+      const beforeTitle = existing.title;
       const refreshed = mergeDuplicateMetadata(existing, item);
-      if (refreshed) await chrome.storage.local.set({ [STORAGE_KEY]: items });
+      // 标题被这次抓到的内容换掉了：把原来那条留作快照，
+      // 之后界面上就能同时给出「收藏时看到的」和「网站现在给的」两版标题。
+      const remembered = existing.title !== beforeTitle ? rememberTitleBeforeReplace(existing, beforeTitle) : false;
+      const backfilled = backfillTitleAtSave(existing, item);
+      if (refreshed || remembered || backfilled) await chrome.storage.local.set({ [STORAGE_KEY]: items });
       return { ok: true, item: existing, updated: true, duplicated: true, refreshed };
     }
 
     const normalized = {
       id: crypto.randomUUID(),
-      title: item.title || item.url,
-      description: item.description || "暂无摘要",
+      title: recordTitle(item.title, item.url),
+      // 添加这一刻网页自己的标题，单独存一份快照。
+      // 用途：有些站点每次打开的网址都会变（换参数、SPA 换路由、短链跳转），
+      // 之后凭网址已经找不到「浏览器里还开着的那一个」了；有这份原标题，
+      // 关标签页时就能用「同一个站点 + 同一个标题」把它们认出来。
+      // 它也会在标题被用户改掉之后继续保留原始值，不跟着 title 一起变。
+      titleAtSave: recordTitle(item.titleAtSave || item.title, item.url),
+      description: item.description && !looksMojibake(item.description) ? item.description : "暂无摘要",
       image: item.image || "",
       favicon: item.favicon || "",
       source: item.source || safeHostname(item.url),
@@ -1025,17 +1147,24 @@ async function runBatchSave({ tabs, source = "shortcut", notifyTabId = null, pro
         const key = normalizeUrl(meta.url);
         const existing = items.find((entry) => normalizeUrl(entry.url) === key);
         if (existing) {
+          const beforeTitle = existing.title;
           const refreshed = mergeDuplicateMetadata(existing, meta);
+          const remembered = existing.title !== beforeTitle ? rememberTitleBeforeReplace(existing, beforeTitle) : false;
+          const backfilled = backfillTitleAtSave(existing, meta);
           const target = projectId || null;
           const moved = (existing.projectId || null) !== target;
           if (moved) existing.projectId = target;
-          if (refreshed || moved) await chrome.storage.local.set({ [STORAGE_KEY]: items });
+          if (refreshed || remembered || backfilled || moved) await chrome.storage.local.set({ [STORAGE_KEY]: items });
           return { record: existing, duplicated: true, refreshed, moved };
         }
         const record = {
           id: crypto.randomUUID(),
-          title: meta.title || meta.url,
-          description: meta.description || "暂无摘要",
+          title: recordTitle(meta.title, meta.url),
+          // 和单篇收藏一致：把「添加这一刻的网页标题」另存一份，
+          // 供以后网址变了（参数/路由/跳转）还能认出浏览器里那个标签页。
+          // 取的是**抢救前**的页面标题：服务端兜底换掉的只是 title，快照保持原样。
+          titleAtSave: recordTitle(snapshotTitleOf(meta) || meta.title, meta.url),
+          description: meta.description && !looksMojibake(meta.description) ? meta.description : "暂无摘要",
           image: meta.image || "",
           favicon: meta.favicon || "",
           source: meta.source || safeHostname(meta.url),
@@ -1476,14 +1605,65 @@ function isIconLikeImage(url) {
 // 所以当「页面里抓到的明显是站点通用值」时，由 background 重新请求一次网址补救。
 const SERVER_META_TIMEOUT_MS = 8000;
 
+// ── 按站点自己的编码解码 HTML ─────────────────────────────────────
+// Fetch 的 response.text() 永远按 UTF-8 解，不管响应头写了什么。GBK / Big5 的站点
+// （52pojie.cn 就是 charset=gbk）整段中文会塌成「�ᰮ�ƽ�」，标题和摘要全成乱码。
+// 所以这里自己读字节、自己解码：先认响应头 charset，再认文档开头的 <meta charset>，
+// 最后才退回 UTF-8。
+function charsetFromContentType(header) {
+  const match = /charset\s*=\s*["']?([\w.:-]+)/i.exec(header || "");
+  return match ? match[1].toLowerCase() : "";
+}
+
+// 只看前 4KB：编码声明必须在文档很靠前的位置才有意义（浏览器也是这么嗅探的）。
+// 用 latin1 读这一段，是因为要读的只是 ASCII 的标签本身，不能先按 UTF-8 解一遍。
+function charsetFromHtmlHead(bytes) {
+  const head = new TextDecoder("latin1").decode(bytes.subarray(0, 4096));
+  const meta = /<meta[^>]+charset\s*=\s*["']?([\w.:-]+)/i.exec(head);
+  return meta ? meta[1].toLowerCase() : "";
+}
+
+// 浏览器不认的编码标签会让 TextDecoder 抛错，这里把常见别名换成标准名。
+const CHARSET_ALIASES = {
+  gb2312: "gbk",
+  gb_2312: "gbk",
+  "gb_2312-80": "gbk",
+  "x-gbk": "gbk",
+  cp936: "gbk",
+  ms936: "gbk",
+  "windows-936": "gbk",
+  cp950: "big5",
+  "x-x-big5": "big5"
+};
+
+function decodeHtmlBuffer(buffer, contentType) {
+  const bytes = new Uint8Array(buffer);
+  const declared = charsetFromContentType(contentType) || charsetFromHtmlHead(bytes);
+  const label = CHARSET_ALIASES[declared] || declared;
+  // 逐个候选试：声明可能是不认识的标签，也可能声明错了，最后一定有 UTF-8 兜底。
+  for (const candidate of [label, "utf-8"]) {
+    if (!candidate) continue;
+    try {
+      return new TextDecoder(candidate).decode(bytes);
+    } catch {
+      // 不认这个标签，换下一个
+    }
+  }
+  return new TextDecoder("utf-8").decode(bytes);
+}
+
 async function refetchMetaFromServer(url) {
   if (!/^https?:\/\//i.test(url || "")) return null;
   try {
     const response = await withTimeout(fetch(url, { credentials: "omit" }), SERVER_META_TIMEOUT_MS, null);
     if (!response || !response.ok) return null;
-    if (!/text\/html/i.test(response.headers.get("content-type") || "")) return null;
+    const contentType = response.headers.get("content-type") || "";
+    if (!/text\/html/i.test(contentType)) return null;
+    // 读字节而不是 response.text()：后者固定按 UTF-8 解，GBK 站点会整段乱码。
     // og 标签都在文档头部，前 200KB 足够。
-    const html = (await withTimeout(response.text(), SERVER_META_TIMEOUT_MS, "")) || "";
+    const buffer = await withTimeout(response.arrayBuffer(), SERVER_META_TIMEOUT_MS, null);
+    if (!buffer) return null;
+    const html = decodeHtmlBuffer(buffer, contentType);
     const head = html.slice(0, 200000);
 
     const decode = (text) =>
@@ -1538,6 +1718,7 @@ async function refetchMetaFromServer(url) {
 // 原地修改并返回 result。
 async function applyServerMetaRescue(result) {
   const titleIsWeak =
+    looksMojibake(result.title) ||
     ["tab", "page-title", "none", "page", "meta-title"].includes(result.titleFrom) ||
     (result.titleFrom !== "dom-headline" && titleHasSiteNoise(result.title, result.source));
   const imageIsWeak = !result.image || isIconLikeImage(result.image);
@@ -1546,10 +1727,16 @@ async function applyServerMetaRescue(result) {
   const server = await refetchMetaFromServer(result.url);
   if (server) {
     const serverTitleUsable =
-      server.title &&
+      !!server.title &&
+      !looksMojibake(server.title) &&
       server.title !== result.title &&
       server.title.toLowerCase() !== String(result.source || "").toLowerCase();
-    if (titleIsWeak && serverTitleUsable) {
+    // 例外：页面自己给的是一个货真价实的标题，而服务器回的却是「视频去哪了呢」这种
+    // 失效页提示——这时绝不能换。页面还开着的时候，那上面写的就是用户此刻看到的内容；
+    // 服务器返回的已经是「现在的样子」了（B 站视频下架后就是这个走向）。
+    const serverTitleIsGone = looksGoneTitle(server.title) && !looksGoneTitle(result.title);
+    const pageTitleSolid = isSolidTitle(result.title, result.source);
+    if (titleIsWeak && serverTitleUsable && !(serverTitleIsGone && pageTitleSolid)) {
       result.title = server.title;
       result.titleFrom = "server";
     }
@@ -1557,7 +1744,8 @@ async function applyServerMetaRescue(result) {
       result.image = server.image;
       result.imageFrom = "server";
     }
-    if (result.description === "暂无摘要" && server.description) {
+    // 摘要同样只接受能读的：乱码摘要不如没有。
+    if (result.description === "暂无摘要" && server.description && !looksMojibake(server.description)) {
       result.description = server.description;
     }
   }
@@ -1568,6 +1756,11 @@ async function extractTabMetadata(tab) {
   const fallback = {
     title: tab.title || tab.url,
     titleFrom: "tab",
+    // 「浏览器里此刻显示的标题」和「页面自己写明的标题」，都在抢救之前先留一份。
+    // 标题可能被服务端兜底换掉（见 applyServerMetaRescue），换掉之后这两份仍然保留，
+    // 用来告诉用户「你当初看到的是哪一条」。
+    pageTitle: (tab.title || "").trim(),
+    browserTitle: (tab.title || "").trim(),
     description: "暂无摘要",
     image: "",
     imageFrom: "none",
@@ -1598,10 +1791,17 @@ async function extractTabMetadata(tab) {
       continue;
     }
 
+    // 页面上抓到的标题由浏览器解码，正常情况下一定是好的；万一站点把字节流写坏、
+    // 或者抓到的是别的页面的残值，就退回标签页标题（那个来自 Chrome 自身，最可靠）。
+    const cleanTitle = data.title && !looksMojibake(data.title) ? data.title : "";
+    const cleanDescription = data.description && !looksMojibake(data.description) ? data.description : "";
     const result = {
-      title: data.title || fallback.title,
-      titleFrom: data.title ? data.titleFrom || "page" : "tab",
-      description: data.description || fallback.description,
+      title: cleanTitle || fallback.title,
+      titleFrom: cleanTitle ? data.titleFrom || "page" : "tab",
+      // 抢救前的标题快照：页面里读到的那一条（没读到就用标签页标题）。
+      pageTitle: cleanTitle || fallback.pageTitle,
+      browserTitle: (tab.title || "").trim(),
+      description: cleanDescription || fallback.description,
       image: data.image || "",
       imageFrom: data.imageFrom || "none",
       favicon: data.favicon || fallback.favicon,

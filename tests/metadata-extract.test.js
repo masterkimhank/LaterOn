@@ -226,7 +226,7 @@ console.log("\n=== 八、只保留一份提取逻辑（不再各处复制）==="
 
 console.log("\n=== 九、重复收藏时会不会修好坏掉的旧记录 ===");
 {
-  const constFree = ["isPlaceholderText", "titleHasSiteNoise", "isIconLikeImage", "mergeDuplicateMetadata"]
+  const constFree = ["isPlaceholderText", "titleHasSiteNoise", "isIconLikeImage", "looksMojibake", "isSolidTitle", "looksGoneTitle", "mergeDuplicateMetadata"]
     .map((name) => extractFunctionSource(BACKGROUND, name))
     .join("\n");
   const { mergeDuplicateMetadata, isPlaceholderText, titleHasSiteNoise } = new Function(
@@ -656,7 +656,7 @@ console.log("\n=== 十八、判断「标题其实没抓到 / 抓得不干净」�
 
 console.log("\n=== 十九、重复收藏时自动把「带尾巴的旧标题」修干净 ===");
 {
-  const helpers = ["isPlaceholderText", "titleHasSiteNoise", "isIconLikeImage", "mergeDuplicateMetadata"]
+  const helpers = ["isPlaceholderText", "titleHasSiteNoise", "isIconLikeImage", "looksMojibake", "isSolidTitle", "looksGoneTitle", "mergeDuplicateMetadata"]
     .map((name) => extractFunctionSource(BACKGROUND, name))
     .join("\n");
   const { mergeDuplicateMetadata } = new Function(`${helpers}\nreturn { mergeDuplicateMetadata };`)();

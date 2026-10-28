@@ -10,6 +10,7 @@
     askFolderOnSingle: false,  // 收藏当前这一篇前，是否先弹窗选项目（默认关；主动打开才先选项目）
     askFolderOnSingleOptIn: false, // 迁移标记：旧版默认 true 不算用户主动开启
     autoCleanDays: 30          // 标为已读后多少天自动清除（30–180 天）
+    ,closeTabsOnDelete: false  // 删除收藏时，是否把浏览器里还开着的同一网页的标签页一起关掉（默认关）
     ,language: "zh-CN"         // zh-CN | en
   };
 

@@ -1,6 +1,9 @@
 .DS_Store
 .workbuddy/
 dist/
+node_modules/
 tests/board-preview.html
 tests/dialog-preview.html
 tests/picker-preview.html
+# 本地核对布局用的假数据预览页（不参与打包）
+preview-*.html

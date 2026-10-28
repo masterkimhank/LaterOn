@@ -189,6 +189,9 @@ const check = (label, ok, extra = "") => {
   check("没有弹任何浮层、也没开窗口", overlays.length === 0 && windowsCreated.length === 0, `浮层 ${overlays.length} / 窗口 ${windowsCreated.length}`);
   const saved = store.laterOnItems.find((i) => i.url === PAGE_URL);
   check("这一篇被直接收藏了", !!saved, saved ? saved.title : "没找到");
+  // 网址以后可能会变（换参数 / SPA 换路由 / 短链跳转）：入库时另存一份「添加时的原标题」，
+  // 之后关标签页时靠它把浏览器里那一个认出来。
+  check("入库时另存了「添加时的原标题」", saved?.titleAtSave === "单篇文章", JSON.stringify(saved?.titleAtSave));
   check("关闭后收进「等待整理」（不带项目）", saved && (saved.projectId || null) === null, `projectId=${JSON.stringify(saved?.projectId)}`);
   check("只弹了一条结果提示", pills.length === 1 && String(pills[0].items[0].text).includes("已添加："), pills.map((p) => p.items[0].text).join(" | "));
 
@@ -214,6 +217,7 @@ const check = (label, ok, extra = "") => {
   await waitForDone();
   const done = store.laterOnItems.find((i) => i.url === PAGE_URL);
   check("收藏成功，并且带上了所选项目", !!done && done.projectId === FOLDER_ID, `projectId=${done?.projectId}`);
+  check("经「先选项目」这条路收藏时也记了原标题", done?.titleAtSave === "单篇文章", JSON.stringify(done?.titleAtSave));
   check("单篇只弹一条提示（没有「开始收藏」「全部完成」）", pills.length === 1, pills.map((p) => p.items[0].text).join(" | "));
   check("提示里写明了这一篇的标题", String(pills[0]?.items?.[0]?.text).includes("单篇文章"), pills[0]?.items?.[0]?.text);
   check("诊断里记下了封面来源（设置页自检不断更）", (store.laterOnDiag?.lastCoverFrom || "none") !== "none", store.laterOnDiag?.lastCoverFrom);
@@ -231,6 +235,9 @@ const check = (label, ok, extra = "") => {
   const moved = store.laterOnItems.find((i) => i.url === DUP_URL);
   check("没有新增重复的一条", store.laterOnItems.filter((i) => i.url === DUP_URL).length === 1, `${store.laterOnItems.filter((i) => i.url === DUP_URL).length} 条`);
   check("被搬进了所选项目", moved?.projectId === FOLDER_ID, `projectId=${moved?.projectId}`);
+  // 老数据（没有 titleAtSave 的那些）在重复收藏时顺手补上，不用等用户手动迁移。
+  check("老收藏缺「添加时的原标题」时，重复收藏会补上",
+    moved?.titleAtSave === "早就收藏过的一篇", JSON.stringify(moved?.titleAtSave));
   check("提示写明「已移到」哪个项目", pills.some((p) => String(p.items[0].text).includes("已移到「工作」")), pills.map((p) => p.items[0].text).join(" | "));
 
   // ── 第 5 步：浮层里按 Esc 取消 → 什么都不收藏 ─────────────────

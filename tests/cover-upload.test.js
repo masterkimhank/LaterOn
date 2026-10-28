@@ -251,7 +251,7 @@ function partMerge() {
   };
   const context = vm.createContext({ URL, console });
   vm.runInContext(
-    ["isPlaceholderText", "titleHasSiteNoise", "isIconLikeImage", "mergeDuplicateMetadata"].map(grab).join("\n\n"),
+    ["isPlaceholderText", "titleHasSiteNoise", "isIconLikeImage", "looksMojibake", "isSolidTitle", "looksGoneTitle", "mergeDuplicateMetadata"].map(grab).join("\n\n"),
     context
   );
   const merge = vm.runInContext("mergeDuplicateMetadata", context);

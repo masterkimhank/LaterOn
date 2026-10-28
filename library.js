@@ -28,12 +28,18 @@ let items = [];
 let projects = [];
 let filter = DEFAULT_FILTER;
 let query = "";
+// 搜索范围：「all」= 全局搜索（默认，也是这一页一直以来的行为）；「unfiled」= 只搜等待整理。
+// 搜索词本身是临时的，范围开关也一样临时——每次打开页面都回到「全部」，
+// 免得昨天为了整理把范围收窄了，今天搜东西莫名其妙只搜到一个角落。
+let searchScope = "all";
 let sort = "newest";
 let orders = {};
 let activeProject = "all";
 // 首页用品牌 slogan；用户明确进入某个导航范围后，标签页改成对应范围名称。
 let pageTitleMode = "home";
 let autoMarkRead = true;
+// 删除收藏时，是否顺带关掉浏览器里还开着的同一网页的标签页（设置页里手动开，默认关）。
+let closeTabsOnDelete = false;
 // 视图：全部项目 = 图板（一个类目一张），待整理 / 某个项目 = 卡片列表。
 // 不再提供手动切换——图板只在「全部项目」总览下有意义，钻进某个项目就是卡片。
 let settings = {};          // 当前设置（主题等）：卡片上弹浮层时要跟它对齐配色
@@ -75,6 +81,7 @@ const countText = document.querySelector("#countText");
 const template = document.querySelector("#cardTemplate");
 const boardTemplate = document.querySelector("#boardTemplate");
 const searchInput = document.querySelector("#searchInput");
+const searchBox = document.querySelector("#searchBox");
 const sortSelect = document.querySelector("#sortSelect");
 const toast = document.querySelector("#toast");
 const tr = (key, vars) => {
@@ -83,8 +90,26 @@ const tr = (key, vars) => {
     deleteProject: "删除项目", deleteProjectTitle: "删除项目「{name}」？", deleteProjectItems: "项目及其中的 {n} 篇网页将一起删除，删除后无法恢复。", deleteEmptyProject: "这个项目里还没有网页，删除后无法恢复。", projectDeletedWithItems: "已删除项目「{name}」及其中的 {n} 篇网页", projectDeleted: "已删除项目「{name}」",
     archive: "归档", archiveProject: "归档项目", restoreProject: "恢复项目", projectArchived: "项目及内容已归档，可在归档中恢复", projectRestored: "项目及内容已恢复",
     noInbox: "还没有要整理的", searchCount: "在全部网页里找到 {count} 篇 · {unfinished} 篇没看完",
+    searchScopeAria: "搜索范围", searchScopeAll: "全部", searchScopeInbox: "等待整理",
+    search: "搜索网页", searchInboxPlaceholder: "搜索等待整理",
+    searchCountInbox: "在等待整理里找到 {count} 篇 · {unfinished} 篇没看完",
+    noInboxMatches: "等待整理里没有匹配的网页",
+    noInboxMatchesHint: "换个关键词，或把范围切到「全部」在全部网页里找。",
     scopedCount: "{count} 篇网页 · {unfinished} 篇没看完", noMatches: "没有找到匹配的网页",
     noMatchesHint: "换个关键词，或切换顶部的阅读状态筛选。", quiet: "这里还很安静",
+    deleteWillCloseTabs: "同时会关掉 {n} 个已打开的这个网页的标签页。",
+    titleAtSaveLine: "收藏时：{title}",
+    itemDeletedAndClosed: "已删除网页，并关闭了 {n} 个标签页",
+    bulkDeletedAndClosed: "已删除 {n} 篇，并关闭了 {closed} 个标签页",
+    closeProjectTabs: "关闭已打开",
+    closeProjectTabsHint: "关闭这个项目里已打开的标签页，收藏不会被删除",
+    closeTabsMenu: "关闭已打开的标签页",
+    closeTabsTitle: "关闭「{name}」里已打开的 {n} 个标签页？",
+    closeTabsMessage: "只关闭浏览器里的标签页，这个项目里的收藏一条都不会删。",
+    closeTabsConfirm: "关闭标签页",
+    closeTabsDone: "已关闭 {n} 个标签页，收藏都还在",
+    closeTabsNone: "「{name}」里没有已打开的标签页",
+    closeTabsNoItems: "「{name}」里还没有收藏",
     quietHint: "打开一个有价值的网页，点击浏览器工具栏中的 LaterOn 图标即可添加。",
     noBoard: "没有匹配的类目", noBoardHint: "换个关键词，或切换顶部的阅读状态筛选。",
     boardCount: "{groups} 个项目 · 共 {total} 篇网页 · {unfinished} 篇没看完", notFinished: "没看完",
@@ -145,6 +170,46 @@ function normalizeItems(list) {
     const doneAt = status === "done" ? (Number(it.doneAt) || Date.now()) : null;
     return { ...it, status, doneAt };
   });
+}
+
+// ── 增量更新 ────────────────────────────────────────────────
+// 700 条时，点一下「标为已读」只该动 1 张卡片，而不是重写 345KB 再重绘 700 张。
+// 后台 mutateItems 每次都会 set 整个 STORAGE_KEY 数组，所以这里按 oldValue/newValue
+// 逐条比对，得出真正变化的 id；只有「不影响集合与排序」的字段变化才走增量，
+// 否则（增删、改 status / projectId / savedAt / source）回退全量 render。
+
+// 这些字段一变，条目可能在当前筛选里出现/消失，或排序位置改变 → 必须全量。
+const COLLECTION_AFFECTING_FIELDS = ["status", "projectId", "savedAt", "source", "read"];
+
+// 比较两份数组，返回：
+//   { safe: true, changedIds: Set }   —— 可以只更新这些卡片
+//   { safe: false }                    —— 有增删或集合影响字段变化，走全量
+function diffItemsForIncremental(oldList, newList) {
+  if (!Array.isArray(oldList) || !Array.isArray(newList)) return { safe: false };
+  if (oldList.length !== newList.length) return { safe: false };
+  const changedIds = new Set();
+  const newById = new Map(newList.map((item) => [item.id, item]));
+  for (const oldItem of oldList) {
+    if (!oldItem || oldItem.id == null) return { safe: false };
+    const next = newById.get(oldItem.id);
+    if (!next) return { safe: false }; // 有删除
+    for (const key of COLLECTION_AFFECTING_FIELDS) {
+      if (oldItem[key] !== next[key]) return { safe: false };
+    }
+    // 其余字段逐项比，找出真正变了哪些（含纯展示字段）。
+    let changed = false;
+    for (const key of new Set([...Object.keys(oldItem), ...Object.keys(next)])) {
+      if (oldItem[key] !== next[key]) { changed = true; break; }
+    }
+    if (changed) changedIds.add(oldItem.id);
+  }
+  // 顺序也参与判断：卡片的先后由 visible.sort() 决定，而增量分支不重排 DOM。
+  // 万一后台某次改写换了数组顺序（导入、同步、手工修数据），只更新卡片内容会让
+  // 界面停在旧顺序上，看着像「排序没生效」。这种情况直接退回全量，代价很小。
+  for (let index = 0; index < oldList.length; index += 1) {
+    if (oldList[index].id !== newList[index].id) return { safe: false };
+  }
+  return { safe: true, changedIds };
 }
 
 // ── 封面取值 / 搬家 / 写回 ──────────────────────────────────
@@ -218,6 +283,62 @@ function clearSearch() {
   if (searchInput?.value) searchInput.value = "";
   query = "";
 }
+
+// ── 搜索范围（全部 / 等待整理）──────────────────────────────
+// 全局搜索是刻意的默认：人在某个项目里搜一个明明存在的标题却什么都没搜到，
+// 会以为这篇收藏丢了。但整理「等待整理」时正好相反——想看的是「这条在不在待整理里」，
+// 全库结果会混进已经归好类的条目。所以给同一个搜索框加一个范围开关，
+// 默认档不变（全部），要看子集就自己拨过去。
+const SEARCH_SCOPES = new Set(["all", "unfiled"]);
+
+// 当前这次搜索是否只覆盖「等待整理」。没有搜索词时无所谓范围，一律返回 false。
+function searchingInboxOnly() {
+  return !!query && searchScope === "unfiled";
+}
+
+// 把开关的外观、输入框占位文字和「本次是在子集里搜」的边框同步成当前范围。
+function syncSearchScopeUI() {
+  const scoped = searchScope === "unfiled";
+  searchBox?.classList.toggle("is-scoped", scoped);
+  document.querySelectorAll(".scope-option").forEach((button) => {
+    const on = button.dataset.scope === searchScope;
+    button.classList.toggle("active", on);
+    button.setAttribute("aria-pressed", String(on));
+  });
+  // 占位文字跟着范围走：范围一收窄，输入框自己就说清楚在搜哪儿。
+  if (searchInput) searchInput.placeholder = tr(scoped ? "searchInboxPlaceholder" : "search");
+}
+
+// 拨开关：立刻按新范围重算结果（关键词还在，只是找的地方变了），并把光标送回输入框，
+// 拨完就能接着打字。
+function setSearchScope(value) {
+  const next = SEARCH_SCOPES.has(value) ? value : "all";
+  if (next === searchScope) return;
+  searchScope = next;
+  syncSearchScopeUI();
+  render();
+  searchInput?.focus();
+}
+
+// 离开这一屏时把范围收回默认档：留着一个「只搜未归类」的开关去别的项目里搜，
+// 比搜不到东西更容易让人困惑。不触发渲染，调用方本来就会重画。
+function resetSearchScope() {
+  if (searchScope === "all") return;
+  searchScope = "all";
+  syncSearchScopeUI();
+}
+
+document.querySelectorAll(".scope-option").forEach((button) => {
+  button.addEventListener("click", () => setSearchScope(button.dataset.scope));
+});
+
+// 这个框原来是个 <label>，点图标和留白都会把光标送进输入框；换成 div 之后
+// 得自己把这条补回来（否则点放大镜图标没反应，像是坏了）。
+searchBox?.addEventListener("click", (event) => {
+  if (event.target.closest(".scope-option")) return;
+  searchInput?.focus();
+});
+
 // 把三个筛选按钮的高亮同步成当前的 filter。
 // 之前只有「点按钮」时才改高亮，另一边改了存储这边就对不上了，所以抽出来单独调。
 function syncFilterButtons() {
@@ -251,6 +372,10 @@ async function init() {
     chrome.storage.local.set({ [STORAGE_KEY]: items });
   }
   projects = sortPinnedFirst(result[PROJECTS_KEY] || []);
+  // 首屏卡片建出来时自己就会把下拉填对，初始化这次 render 不必再全量重建一遍下拉
+  // （700 张卡 = 700 次 replaceChildren）。指纹对齐后，refreshCardProjectOptions
+  // 只在项目真的新建/改名/归档/删除时才动手。
+  projectOptionsSignature = projectsFingerprint();
   orders = result[ORDER_KEY] || {};
   const launchParams = new URLSearchParams(window.location.search);
   const launchedFromSidepanel = launchParams.get("from") === "sidepanel";
@@ -264,6 +389,7 @@ async function init() {
   sort = userSettings.defaultSort || "newest";
   sortSelect.value = sort;
   autoMarkRead = userSettings.autoMarkRead !== false;
+  closeTabsOnDelete = userSettings.closeTabsOnDelete === true;
   // 旧版本会在回首页时写入 all，但那不是用户的筛选偏好；升级后首次打开回到未读。
   filter = launchedFromSidepanel
     ? normalizeFilter(launchParams.get("filter") || result[FILTER_KEY])
@@ -278,6 +404,8 @@ async function init() {
     pageTitleMode = "section";
   }
   syncFilterButtons();
+  // 语言已就绪，这时候把范围开关的文案/占位文字对齐到当前语言与默认档（全部）。
+  syncSearchScopeUI();
   // focus 只接受当前共享的正在读条目，防止陈旧链接把另一篇卡片误当成当前文章。
   const requestedFocus = launchParams.get("focus");
   initialLocateItemId = launchedFromSidepanel && requestedFocus === currentItemId ? currentItemId : null;
@@ -289,8 +417,23 @@ async function init() {
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes[STORAGE_KEY]) {
-    items = normalizeItems(changes[STORAGE_KEY].newValue || []);
-    render();
+    const next = normalizeItems(changes[STORAGE_KEY].newValue || []);
+    // 增量：只有「纯展示字段」变了（改标题/摘要/封面/换 favicon）且没增删，
+    // 才只更新受影响的卡片；否则（标已读、挪项目、增删、换排序字段）走全量。
+    const diff = diffItemsForIncremental(items, next);
+    items = next;
+    if (diff.safe && diff.changedIds.size > 0) {
+      // 集合、顺序、计数都没变，只把这几张卡的内容刷新即可。
+      for (const id of diff.changedIds) {
+        const card = cardMap.get(id);
+        if (card) {
+          const item = items.find((entry) => entry.id === id);
+          if (item) updateCard(card, item);
+        }
+      }
+    } else {
+      render();
+    }
     renderProjects();
   }
   if (area === "local" && changes[COVERS_KEY]) {
@@ -317,6 +460,8 @@ chrome.storage.onChanged.addListener((changes, area) => {
     const s = changes[SETTINGS_KEY].newValue || {};
     if (s.defaultSort && s.defaultSort !== sort) { sort = s.defaultSort; sortSelect.value = sort; render(); }
     if (typeof s.autoMarkRead === "boolean") autoMarkRead = s.autoMarkRead;
+    // 设置页可能就在另一个标签页里开着，开关一拨这边立刻跟上，不用刷新。
+    if (typeof s.closeTabsOnDelete === "boolean") closeTabsOnDelete = s.closeTabsOnDelete;
   }
   if (area === "local" && changes[CURRENT_ITEM_KEY]) {
     currentItemId = changes[CURRENT_ITEM_KEY].newValue || null;
@@ -885,11 +1030,15 @@ function render() {
 
 function renderCardsView() {
   boardGrid.replaceChildren();
-  // 搜索是全局的：搜索框里有字时一律在「全部收藏」里找，不受当前所在项目限制。
+  // 搜索默认是全局的：搜索框里有字时一律在「全部收藏」里找，不受当前所在项目限制。
   // （以前是在当前项目的范围里找，人在某个项目里搜一个明明存在的标题会一无所获，
   //   还以为这篇收藏丢了。）「未读 / 已读」那一档仍然生效——它是用户自己拨过去的开关，
   // 不该被搜索悄悄改掉；没结果时的提示里也说了可以切它。
+  // 例外是范围开关拨到了「等待整理」：这时候搜索本来就是要看子集，
+  // 只收没归类的条目，跟当前停在哪个项目无关。
+  const inboxOnly = searchingInboxOnly();
   const scopedItems = items.filter((item) => {
+    if (inboxOnly) return !item.projectId;
     if (activeProject === "archive") return itemIsArchived(item);
     if (itemIsArchived(item) && activeProject !== item.projectId) return false;
     return !!query || activeProject === "all" || (activeProject === "unfiled" ? !item.projectId : item.projectId === activeProject);
@@ -898,14 +1047,16 @@ function renderCardsView() {
     // 「未读」= 还没读完（未读 + 在读）；「已读」= 手动标完成的那批。
     // 这样点开文章（自动进「在读」）不会让它从「未读」里消失——没读完就还算没读。
     const matchesFilter = filter === "all" || (filter === "done" ? item.status === "done" : item.status !== "done");
-    const haystack = `${item.title} ${item.description} ${item.source} ${item.url}`.toLowerCase();
+    // 搜索也要能命中「收藏时的原标题」：标题被网站改掉以后，
+    // 用户记住的往往还是当初看到的那一条。
+    const haystack = `${item.title} ${item.titleAtSave || ""} ${item.description} ${item.source} ${item.url}`.toLowerCase();
     return matchesFilter && (!query || haystack.includes(query));
   });
   visible.sort(customOrderComparator(scopedItems));
-  // 计数要说清是「在哪找的」：搜索时报命中数，并写明是在全部收藏里找的
-  // ——否则人在某个项目里会以为顶上那个数字还是这个项目的。
+  // 计数要说清是「在哪找的」：搜索时报命中数，并写明是在全部收藏里、还是只在等待整理里找的
+  // ——否则人在某个项目里会以为顶上那个数字还是这个项目的；收窄了范围更会以为全库都翻过了。
   countText.textContent = query
-    ? tr("searchCount", { count: visible.length, unfinished: visible.filter((item) => item.status !== "done").length })
+    ? tr(inboxOnly ? "searchCountInbox" : "searchCount", { count: visible.length, unfinished: visible.filter((item) => item.status !== "done").length })
     : tr("scopedCount", { count: scopedItems.length, unfinished: scopedItems.filter((item) => item.status !== "done").length });
 
   // 增量更新：只增删/重排发生变化的卡片，保留已有 DOM（不丢滚动、不重建监听）。
@@ -920,8 +1071,10 @@ function renderCardsView() {
 
   empty.hidden = visible.length > 0;
   if (!visible.length && items.length) {
-    empty.querySelector("h2").textContent = tr("noMatches");
-    empty.querySelector("p").textContent = tr("noMatchesHint");
+    // 空结果分两种说法：全库搜不到，和「等待整理里没有但别处可能有」——
+    // 后者如果把话说成前者，人就会重复去别的地方找，所以要点明可以切回「全部」。
+    empty.querySelector("h2").textContent = tr(inboxOnly ? "noInboxMatches" : "noMatches");
+    empty.querySelector("p").textContent = tr(inboxOnly ? "noInboxMatchesHint" : "noMatchesHint");
   } else if (!items.length) {
     empty.querySelector("h2").textContent = tr("quiet");
     empty.querySelector("p").textContent = tr("quietHint");
@@ -947,6 +1100,10 @@ function syncViewUI() {
   sortSelect.hidden = board;
   const selectButton = document.querySelector("#selectMode");
   if (selectButton) selectButton.hidden = board;
+  // 「关闭已打开」只对单个项目（含等待整理）有意义：全部项目 / 归档不是单个项目，
+  // 在它们里面搜索时虽然会切成卡片视图，范围仍然是整库/整个归档，也不该出现。
+  const closeButton = document.querySelector("#closeProjectTabs");
+  if (closeButton) closeButton.hidden = board || activeProject === "all" || activeProject === "archive";
   if (board && selectMode) setSelectMode(false);
 }
 
@@ -1305,7 +1462,6 @@ function renderCards(visible, start, token) {
     else updateCard(card, item);
     if (grid.children[index] !== card) grid.insertBefore(card, grid.children[index] || null);
   }
-  applyCurrentHighlight();
   if (initialLocateItemId && cardMap.has(initialLocateItemId)) {
     const targetId = initialLocateItemId;
     initialLocateItemId = null;
@@ -1314,7 +1470,12 @@ function renderCards(visible, start, token) {
     // 当前筛选里没有这篇时尊重筛选，不强行跳档；同时结束这次定位任务。
     initialLocateItemId = null;
   }
-  if (end < visible.length) nextLibraryRender(() => renderCards(visible, end, token));
+  if (end < visible.length) {
+    nextLibraryRender(() => renderCards(visible, end, token));
+    return;
+  }
+  // 只在整次渲染的最后一批结束时高亮一次，而不是每批都扫一遍全部卡片。
+  applyCurrentHighlight();
 }
 
 // YouTube 的最大分辨率封面（maxresdefault）对部分视频并不存在，
@@ -1339,11 +1500,31 @@ function nextCoverFallback(currentSrc) {
 }
 
 // 把「正在读」那篇标出来（全屏与侧栏都会用到这个共享标记）。
+// 以前每批渲染都会把 700 张卡全扫一遍、逐张写 dataset / 切 class；
+// 真正会变的只有「上一张」和「这一张」两张卡，所以记住上次那张，只动这两张。
+// 注意：这里**不能**用「上次高亮的 id 和这次一样就直接返回」来省事。
+// 卡片的 DOM 是会被销毁重建的——renderCardsView() 开头会把不在当前可见集合里的卡片
+// remove() 掉并从 cardMap 删除，切回来时 createCard() 造的是全新节点（不带 is-current），
+// 而 currentItemId 一直没变。一旦按 id 提前返回，重建出来的卡片就永远补不上高亮：
+// 表现为「正在读的那篇切一次项目/清一次搜索，橙色描边就没了，切回来也不回来」。
+// 所以只做「值没变就不重复写」的微优化，不做整段跳过。
+let lastHighlightId = null;
 function applyCurrentHighlight() {
-  for (const [id, card] of cardMap) {
-    card.dataset.currentLabel = tr("currentReading");
-    card.classList.toggle("is-current", id === currentItemId);
+  const label = tr("currentReading");
+  const next = currentItemId || null;
+  if (lastHighlightId && lastHighlightId !== next) {
+    const old = cardMap.get(lastHighlightId);
+    if (old) {
+      if (old.dataset.currentLabel) delete old.dataset.currentLabel;
+      old.classList.remove("is-current");
+    }
   }
+  const cur = next ? cardMap.get(next) : null;
+  if (cur) {
+    if (cur.dataset.currentLabel !== label) cur.dataset.currentLabel = label;
+    if (!cur.classList.contains("is-current")) cur.classList.add("is-current");
+  }
+  lastHighlightId = next;
 }
 
 // 把「正在读」的卡片滚进可视区域（只在该页面还活着时调用，比如从侧栏点开、
@@ -1379,6 +1560,7 @@ function applyCover(card, item) {
     img.src = src;
     img.alt = "";
     img.loading = "lazy";
+    img.decoding = "async";
     img.addEventListener("error", () => {
       const fallback = nextCoverFallback(img.src);
       if (fallback) img.src = fallback;
@@ -1391,6 +1573,26 @@ function applyCover(card, item) {
     if (placeholder) cover.replaceChildren(placeholder);
     else cover.replaceChildren();
   }
+}
+
+// 「收藏时看到的标题」那一行：只在这一版和现在的标题确实不同时才显示。
+// 场景：网站几天后改了标题，或者视频下架、页面变成一句「视频去哪了呢」——
+// 收藏里的标题会被更新成新的那一条，当初看到的那条就只留在 titleAtSave 里了。
+function titleAtSaveText(item) {
+  const then = String(item?.titleAtSave || "").trim();
+  const now = String(item?.title || "").trim();
+  if (!then || then === now || then.length < 2) return "";
+  // 没抓到标题时会退回网址 / 域名兜底值，那不算标题，不必展示。
+  if (/^https?:\/\//i.test(then)) return "";
+  if (/^[a-z0-9-]+(\.[a-z]{2,}){1,2}$/i.test(then)) return "";
+  return tr("titleAtSaveLine", { title: then });
+}
+
+function syncTitleAtSave(element, item) {
+  if (!element) return;
+  const text = titleAtSaveText(item);
+  setText(element, text);
+  element.hidden = !text;
 }
 
 function createCard(item) {
@@ -1407,10 +1609,13 @@ function createCard(item) {
   // 因此 DOM 本身也只能放 http/https，不能把 javascript: 等协议留给浏览器执行。
   coverLink.href = titleLink.href = safeTarget(item.url) || "#";
   setText(fragment.querySelector(".title-link h2"), item.title);
+  syncTitleAtSave(fragment.querySelector(".title-at-save"), item);
   setText(fragment.querySelector(".description"), IS_EMPTY_SUMMARY.test(item.description) ? tr("noDescription") : item.description);
   fragment.querySelector(".source-name").textContent = item.source;
   fragment.querySelector("time").textContent = formatTime(item.savedAt);
   favicon.src = item.favicon;
+  favicon.loading = "lazy";
+  favicon.decoding = "async";
   favicon.addEventListener("error", () => { favicon.style.visibility = "hidden"; });
   applyCover(card, item);
   card.classList.toggle("is-read", item.status === "done");
@@ -1418,6 +1623,13 @@ function createCard(item) {
   readToggle.textContent = readToggleLabel(item.status);
   readToggle.setAttribute("aria-label", readToggleLabel(item.status));
   fillProjectSelect(projectSelect, item.projectId || "");
+  // 下拉选项懒填：初始只有「等待整理」和这篇自己归属的项目，等用户真去点才铺满。
+  armLazyProjectSelect(projectSelect, item.projectId || "");
+  // fillProjectSelect 只负责把选项铺出来，它自己**不会选中**——不在这里补这一行，
+  // 新建出来的卡片会一直停在下拉的第一项「等待整理」上：已经归到某个项目的条目，
+  // 在搜索结果里（卡片是这一轮才新建的）看着就像还没整理过，要等下一次
+  // updateCard 把 value 对齐才纠正过来。归档项目的条目同理。
+  projectSelect.value = item.projectId || "";
   card.classList.toggle("selected", selectedIds.has(item.id));
   const check = card.querySelector(".select-check");
   if (check) check.checked = selectedIds.has(item.id);
@@ -1426,14 +1638,48 @@ function createCard(item) {
 
 // 给卡片上的「所属项目」下拉填选项：永远先放「待整理」，再放所有项目。
 // ensureId/ensureName 用于「刚从浮层里新建了项目」这种边界——那个 id 可能还没进 projects，
-// 但卡片 select 需要这个选项才能把 .value 设对，否则卡片上会显示成空白。
+// 或者它属于一个已归档的项目（归档项目不在正常选项里，但卡片仍然要显示它），
+// 卡片 select 需要这个选项才能把 .value 设对，否则卡片上会显示成「等待整理」。
+//
+// 性能：700 张卡 × 每张铺满全部项目 = 6300 个 <option> 节点，是首屏的大头。
+// 所以改成**懒填**：初始只放「等待整理」和这篇自己归属的那一项（足够把 .value 设对），
+// 等用户真的去点这个下拉，才一次性铺满全部项目（见 lazyFillAllProjects）。
 function fillProjectSelect(select, ensureId, ensureName) {
   select.replaceChildren();
   select.append(new Option(tr("inbox"), ""));
-  projects.filter((project) => !project.archived).forEach((project) => select.append(new Option(project.name, project.id)));
-  if (ensureId && !projects.some((project) => project.id === ensureId)) {
-    select.append(new Option(ensureName || tr("newProject"), ensureId));
+  if (ensureId && ![...select.options].some((option) => option.value === ensureId)) {
+    // 优先用 projects 里的真实名字（当前项通常就是某个项目）；ensureName 兜底给
+    // 「刚新建还没进 projects / 已归档项目」这类边缘情况。
+    const name = ensureName || projects.find((project) => project.id === ensureId)?.name || tr("newProject");
+    select.append(new Option(name, ensureId));
   }
+}
+
+// 首次与下拉交互时，把全部项目补进去（只做一次）。
+function lazyFillAllProjects(select, ensureId) {
+  if (select.dataset.projectsFilled === "1") return;
+  select.dataset.projectsFilled = "1";
+  // 保留「等待整理」；其余按当前 projects 铺满。归档项目照旧不放（不可再选）。
+  projects.filter((project) => !project.archived).forEach((project) => {
+    if (![...select.options].some((option) => option.value === project.id)) {
+      select.append(new Option(project.name, project.id));
+    }
+  });
+  // 如果这篇归属一个刚新建 / 已归档、不在 projects 列表里的项目，把它也补上。
+  if (ensureId && ![...select.options].some((option) => option.value === ensureId)) {
+    const name = projects.find((project) => project.id === ensureId)?.name || tr("newProject");
+    select.append(new Option(name, ensureId));
+  }
+}
+
+// 给卡片绑懒填：首次 pointerdown / focus / keydown 时铺满全部项目。
+function armLazyProjectSelect(select, ensureId) {
+  if (!select || select.dataset.lazyArmed === "1") return;
+  select.dataset.lazyArmed = "1";
+  const fill = () => lazyFillAllProjects(select, ensureId);
+  select.addEventListener("pointerdown", fill, { once: true });
+  select.addEventListener("focus", fill, { once: true });
+  select.addEventListener("keydown", fill, { once: true });
 }
 
 function updateCard(card, item) {
@@ -1447,6 +1693,7 @@ function updateCard(card, item) {
   // 标题和摘要也能同步跟上：卡片是复用的 DOM（只在第一次出现时新建），
   // 不同步的话，改完标题、或重复收藏抓到更好的信息，卡片上会一直是旧文字。
   setText(card.querySelector(".title-link h2"), item.title);
+  syncTitleAtSave(card.querySelector(".title-at-save"), item);
   setText(card.querySelector(".description"), IS_EMPTY_SUMMARY.test(item.description) ? tr("noDescription") : item.description);
   const target = safeTarget(item.url) || "#";
   const titleLink = card.querySelector(".title-link");
@@ -1455,7 +1702,18 @@ function updateCard(card, item) {
   if (coverLink?.getAttribute("href") !== target) coverLink.href = target;
   applyCover(card, item);
   const projectSelect = card.querySelector(".project-select");
-  if (projectSelect.value !== (item.projectId || "")) projectSelect.value = item.projectId || "";
+  const targetProject = item.projectId || "";
+  if (projectSelect.value !== targetProject) {
+    // 下拉是懒填的，初始只有「等待整理」+ 这篇当时归属的那一项。如果归属变了、
+    // 而新项目还没被铺进选项，直接 .value = xxx 是设不上的（会退回「等待整理」）——
+    // 这正是 1.68.0 修过的那个「已归类却显示等待整理」的另一种走法：
+    // 卡片不被重建、只走 updateCard 的时候（例如全局搜索里把一篇拖进别的项目）。
+    // 所以缺选项就先按新归属重建一次下拉（仍只放「等待整理」+ 这一项，不影响懒填）。
+    if (targetProject && ![...projectSelect.options].some((option) => option.value === targetProject)) {
+      fillProjectSelect(projectSelect, targetProject);
+    }
+    projectSelect.value = targetProject;
+  }
   card.classList.toggle("selected", selectedIds.has(item.id));
   const check = card.querySelector(".select-check");
   if (check) check.checked = selectedIds.has(item.id);
@@ -1536,6 +1794,9 @@ async function editItem(item) {
 
 function selectProject(projectId, { asHome = false } = {}) {
   clearSearch();
+  // 换一屏就把搜索范围收回「全部」：把「只搜等待整理」的开关带进别的项目里，
+  // 搜出来的结果会跟眼前这一屏完全无关（下面本来就会 render，这里不必重复触发）。
+  resetSearchScope();
   activeProject = normalizeProject(projectId);
   pageTitleMode = asHome ? "home" : "section";
   renderProjects();
@@ -1723,14 +1984,35 @@ function renderProjects() {
 
 // 新建 / 改名 / 删除项目后，让已存在卡片上的「所属项目」下拉同步跟上，
 // 否则下拉里会一直显示旧名字、或者找不到刚建好的项目。
+//
+// 性能：这个函数会遍历所有卡片重建下拉。而它挂在 renderProjects() 末尾，items
+// 每次变化（点个已读、改个标题）都会经 renderProjects 绕进来一遍 —— 700 张卡就是
+// 700 次 replaceChildren，正好把「下拉懒填」省下来的开销又还回去，也让增量更新
+// 失去意义。所以先用项目指纹短路：项目本身没变，就没有任何一张卡的下拉需要重建。
+// （卡片刚建出来时 createCard 已经把归属填对了，不依赖这里。）
+let projectOptionsSignature = null;
+function projectsFingerprint() {
+  return projects.map((project) => `${project.id}\u0001${project.name}\u0001${project.archived ? 1 : 0}`).join("\u0002");
+}
 function refreshCardProjectOptions() {
-  for (const card of cardMap.values()) {
+  const signature = projectsFingerprint();
+  if (signature === projectOptionsSignature) return;
+  projectOptionsSignature = signature;
+  for (const [id, card] of cardMap) {
     const select = card.querySelector(".project-select");
     if (!select) continue;
-    const current = select.value;
-    select.replaceChildren(new Option(tr("inbox"), ""));
-    projects.filter((project) => !project.archived).forEach((project) => select.append(new Option(project.name, project.id)));
-    if (select.value !== current) select.value = current;
+    // 按「这篇收藏自己归属的项目」重建并选中，而不是把 select 的旧值当依据：
+    // 旧值只能反映上一次渲染的结果（卡片刚建出来时那一下还可能停在「等待整理」），
+    // 项目归档后旧值对应的选项也会消失，照旧值恢复就把标签丢了。
+    const projectId = items.find((entry) => entry.id === id)?.projectId || "";
+    const name = projects.find((project) => project.id === projectId)?.name;
+    fillProjectSelect(select, projectId, name);
+    select.value = projectId;
+    // 项目列表变了，之前可能已经懒填过（projectsFilled=1）、监听也可能已用过（once）。
+    // 清掉两个标记、重新绑一遍监听，下次交互时按新的 projects 重新铺满。
+    delete select.dataset.projectsFilled;
+    delete select.dataset.lazyArmed;
+    armLazyProjectSelect(select, projectId);
   }
 }
 
@@ -2058,6 +2340,8 @@ function openFolderMenu(projectId, x, y) {
     menuItem(project.pinned ? tr("unpinProject") : tr("pinProject"), project.pinned ? "unpin" : "pin", () => toggleProjectPin(projectId)),
     menuItem(tr("rename"), "pencil", () => startRename(projectId, project.name)),
     menuItem(tr("editNote"), "note", () => editBoard(projectId)),
+    // 只关标签页、不删收藏：读完一个专题想一次收干净标签页时用。
+    menuItem(tr("closeTabsMenu"), "closeTabs", () => closeProjectTabs(projectId)),
     menuItem(tr(project.archived ? "restoreProject" : "archiveProject"), "archive", () => toggleProjectArchive(projectId)),
     menuItem(tr("deleteProject"), "trash", () => deleteProject(projectId), true)
   );
@@ -2139,6 +2423,8 @@ function menuItem(label, icon, onPick, danger = false) {
     pencil: "M4 20h4L20 8l-4-4L4 16zM14 6l4 4",
     note: "M6 3h8l4 4v14H6zM14 3v4h4M9 12h6M9 16h4",
     archive: "M3 4h18v4H3zM5 8v12h14V8M9 12h6",
+    // 窗口里一个叉：表示「关标签页」而不是「删条目」。
+    closeTabs: "M4 5h16v14H4zM9.5 9.5l5 5M14.5 9.5l-5 5",
     trash: "M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m3 0-1 13H7L6 7",
     // 下面几个是「单篇收藏菜单」用的：
     open: "M14 5h5v5M19 5l-8 8M17 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h5",
@@ -2331,21 +2617,68 @@ function openCardProjectPicker(card, item, select) {
   });
 }
 
+// ── 删除时顺带关掉浏览器里还开着的同一网页（设置页可开，默认关）──────
+// 只数不关：确认框里那句「还会关掉 N 个标签页」用，让人在按下删除之前就知道代价。
+// 整个条目（而不是只拿网址）传进去：网址变了的那些要靠「原标题」才认得出来。
+async function countOpenTabs(itemsToClose) {
+  if (!closeTabsOnDelete || !itemsToClose.length) return 0;
+  const tabs = await globalThis.LaterOnTabs?.matches?.(itemsToClose);
+  return Array.isArray(tabs) ? tabs.length : 0;
+}
+// 删完之后真正动手。返回关掉的个数，没关就是 0（提示语据此换说法）。
+async function closeOpenTabs(itemsToClose) {
+  if (!closeTabsOnDelete || !itemsToClose.length) return 0;
+  return (await globalThis.LaterOnTabs?.closeMatching?.(itemsToClose)) || 0;
+}
+
+// ── 单个项目：关掉这个项目里还开着的标签页，但一条收藏都不删 ──────────
+// 场景：一个专题读完了，浏览器里还摊着十几篇它的标签页；想一次收干净，
+// 又不想把收藏库里整理好的这批条目一起删掉。
+function projectScopeItems(projectId) {
+  if (projectId === "unfiled") return items.filter((item) => !item.projectId);
+  return items.filter((item) => item.projectId === projectId);
+}
+
+async function closeProjectTabs(projectId) {
+  // 「全部项目 / 归档」不对应单个项目，按项目名说不清范围，不做（按钮在这两个视图里也收起来了）。
+  if (!projectId || projectId === "all" || projectId === "archive") return;
+  const project = projects.find((entry) => entry.id === projectId);
+  const name = project ? project.name : tr("inbox");
+  const scope = projectScopeItems(projectId);
+  if (!scope.length) { showToast(tr("closeTabsNoItems", { name })); return; }
+  // 先数一遍：一个都没开着就别弹框了，直接说一句。
+  const openTabs = (await globalThis.LaterOnTabs?.matches?.(scope)) || [];
+  if (!openTabs.length) { showToast(tr("closeTabsNone", { name })); return; }
+  const confirmed = await LaterOnDialog.confirm({
+    title: tr("closeTabsTitle", { name, n: openTabs.length }),
+    message: tr("closeTabsMessage"),
+    confirmText: tr("closeTabsConfirm")
+  });
+  if (!confirmed) return;
+  const closed = (await globalThis.LaterOnTabs?.closeMatching?.(scope)) || 0;
+  showToast(closed ? tr("closeTabsDone", { n: closed }) : tr("closeTabsNone", { name }));
+}
+
 async function deleteItem(id) {
   const target = items.find((entry) => entry.id === id);
   if (!target) return;
   // 删除是没法撤销的，删之前一定问一句。标题可能很长，截断免得把弹窗撑成一整段。
   const raw = (target.title || "").trim() || tr("itemFallback");
   const title = raw.length > 26 ? `${raw.slice(0, 26)}…` : raw;
+  // 开了「删除时关掉已开的标签页」就先把要关几个数出来写进确认框：
+  // 免得删完才发现顺手关掉了正在看的那一页。
+  const openTabs = await countOpenTabs([target]);
   const confirmed = await LaterOnDialog.confirm({
     tone: "danger",
     title: tr("deleteItemTitle", { title }),
-    message: tr("deleteCannotUndo"),
+    message: openTabs ? `${tr("deleteCannotUndo")} ${tr("deleteWillCloseTabs", { n: openTabs })}` : tr("deleteCannotUndo"),
     confirmText: tr("delete")
   });
   if (!confirmed) return;
   const result = await commitItemMutation("delete", [id]);
-  if (result) showToast(tr("itemDeleted"));
+  if (!result) return;
+  const closed = await closeOpenTabs([target]);
+  showToast(closed ? tr("itemDeletedAndClosed", { n: closed }) : tr("itemDeleted"));
 }
 
 // ── 批量操作 ─────────────────────────────────────────────
@@ -2438,17 +2771,22 @@ async function bulkDelete() {
   // 固定确认框所对应的网页，确认期间的选择变化不能改写删除目标。
   const ids = new Set(selectedIds);
   const count = ids.size;
+  // 要关的标签页同样按这一刻的选中集合算，之后 items 会随删除被替换掉。
+  const targets = items.filter((item) => ids.has(item.id));
+  const openTabs = await countOpenTabs(targets);
   const confirmed = await LaterOnDialog.confirm({
     tone: "danger",
     title: tr("bulkDeleteTitle", { n: count }),
-    message: tr("cannotUndo"),
+    message: openTabs ? `${tr("cannotUndo")} ${tr("deleteWillCloseTabs", { n: openTabs })}` : tr("cannotUndo"),
     confirmText: tr("bulkDeleteButton", { n: count })
   });
   if (!confirmed) return;
   const result = await commitItemMutation("delete", ids);
   if (!result) return;
   finishBulk();
-  showToast(tr("bulkDeleted", { n: result.affected }));
+  // 提示语只在这批收藏真的牵动了浏览器标签时才多说一句，否则维持原来那句。
+  const closed = await closeOpenTabs(targets);
+  showToast(closed ? tr("bulkDeletedAndClosed", { n: result.affected, closed }) : tr("bulkDeleted", { n: result.affected }));
 }
 
 function selectedItemsInViewOrder() {
@@ -2479,6 +2817,8 @@ function finishBulk() {
 }
 
 document.querySelector("#selectMode")?.addEventListener("click", () => setSelectMode(!selectMode));
+// 关掉这个项目里已打开的标签页（收藏保留）。范围取当前所在项目，点了才现查现关。
+document.querySelector("#closeProjectTabs")?.addEventListener("click", () => closeProjectTabs(activeProject));
 document.querySelector("#bulkSelectAll")?.addEventListener("click", () => {
   const allSelected = selectedIds.size >= grid.children.length && grid.children.length > 0;
   [...grid.children].forEach((card) => {
@@ -2494,6 +2834,17 @@ document.querySelector("#bulkProject")?.addEventListener("click", openBulkProjec
 document.querySelector("#bulkDelete")?.addEventListener("click", bulkDelete);
 document.querySelector("#bulkDone")?.addEventListener("click", () => setSelectMode(false));
 
+// 30 天以前的时间用 Intl 格式化。每张卡都 new 一次 Intl.DateTimeFormat 很贵
+// （700 张卡约 30ms，纯浪费），按语言缓存一个实例复用。
+const dateTimeFormatters = new Map();
+function shortDateFormatter(lang) {
+  let fmt = dateTimeFormatters.get(lang);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat(lang, { month: "short", day: "numeric" });
+    dateTimeFormatters.set(lang, fmt);
+  }
+  return fmt;
+}
 function formatTime(timestamp) {
   const diff = Date.now() - timestamp;
   const day = 86400000;
@@ -2501,7 +2852,7 @@ function formatTime(timestamp) {
   if (diff < 3600000) return tr("minutesAgo", { n: Math.floor(diff / 60000) });
   if (diff < day) return tr("hoursAgo", { n: Math.floor(diff / 3600000) });
   if (diff < day * 30) return tr("daysAgo", { n: Math.floor(diff / day) });
-  return new Intl.DateTimeFormat(document.documentElement.lang === "en" ? "en" : "zh-CN", { month: "short", day: "numeric" }).format(timestamp);
+  return shortDateFormatter(document.documentElement.lang === "en" ? "en" : "zh-CN").format(timestamp);
 }
 
 let toastTimer = null;

@@ -30,13 +30,34 @@ nav { display: flex; gap: 4px; padding: 4px; border-radius: 99px; background: va
 .nav-item:hover { color: var(--ink); }
 .nav-item.active { background: var(--active-bg); color: var(--active-text); box-shadow: 0 4px 12px -4px rgba(0,0,0,.4); }
 .search {
-  justify-self: end; display: flex; align-items: center; width: min(280px, 26vw);
+  justify-self: end; display: flex; align-items: center; gap: 2px; width: min(440px, 34vw);
   border: 1px solid var(--hairline-2); border-radius: 14px; background: var(--glass-strong);
-  padding: 9px 12px; box-shadow: var(--shadow-sm); transition: border-color .15s, box-shadow .15s;
+  padding: 6px 8px 6px 12px; box-shadow: var(--shadow-sm); transition: border-color .15s, box-shadow .15s;
 }
 .search:focus-within { border-color: var(--card-line); box-shadow: 0 0 0 4px rgba(255,92,53,.1); }
-.search svg { width: 17px; fill: none; stroke: var(--muted); stroke-linecap: round; stroke-width: 1.8; }
+/* 范围拨在「等待整理」上时整框加一圈暖色边：这次搜索只覆盖没归类的条目，
+   界面得说清楚，否则人搜完会以为全库都翻过了。 */
+.search.is-scoped { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.search svg { width: 17px; flex: none; fill: none; stroke: var(--muted); stroke-linecap: round; stroke-width: 1.8; }
 .search input { min-width: 0; flex: 1; border: 0; outline: 0; padding: 0 8px; background: transparent; font-size: 13px; color: var(--ink); }
+/* 搜索范围开关：两格小胶囊，和顶部「未读 / 已读」是同一套语言，但更小一号，
+   因为它是一个附加开关，不该和主筛选抢注意力。 */
+.search-scope { display: flex; flex: none; gap: 2px; padding: 2px; border-radius: 10px; background: var(--field-soft); }
+.scope-option {
+  border: 0; border-radius: 8px; padding: 4px 9px; background: transparent;
+  color: var(--subtle); font-size: 11px; font-weight: 700; line-height: 1.35; white-space: nowrap;
+  transition: background .15s, color .15s, box-shadow .15s;
+}
+.scope-option:hover { color: var(--ink); }
+.scope-option:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent); outline-offset: 1px; }
+/* 默认档（全部）选中：白底黑字，安静。 */
+.scope-option.active { background: var(--card); color: var(--ink); box-shadow: 0 1px 3px rgba(20,18,14,.14); }
+/* 深色下 --card 只比轨道深一点点，光靠投影分不出层次，补一圈描边。 */
+[data-theme="dark"] .scope-option.active { box-shadow: inset 0 0 0 1px var(--card-line); }
+/* 收窄档（等待整理）选中：实色橙 —— 一眼看出「现在搜的是子集」。 */
+.scope-option.active[data-scope="unfiled"] { background: var(--accent); color: #fff; box-shadow: 0 4px 10px -5px rgba(255,80,50,.7); }
+/* 窄屏先把 ⌘K 提示收起来，把宽度让给输入框和开关。 */
+@media (max-width: 1180px) { .search kbd { display: none; } }
 kbd { border: 1px solid var(--line); border-radius: 5px; padding: 2px 6px; color: var(--subtle); background: var(--field-soft); font-size: 10px; }
 .workspace { display: grid; grid-template-columns: 248px minmax(0,1fr); max-width: 1680px; min-height: calc(100vh - 78px); margin: auto; }
 .project-sidebar {
@@ -285,15 +306,32 @@ select:hover { border-color: var(--card-line); }
   position: relative; overflow: hidden; min-width: 0;
   border: 1px solid var(--card-line); border-radius: var(--radius);
   background: var(--card); box-shadow: var(--shadow-sm);
+  /* 屏外的卡片跳过布局与绘制：700 条时这是首屏最大的单点开销。
+     contain-intrinsic-size 的 auto 让浏览器记住每张卡的真实高度，
+     否则滚动条会因「高度全靠估算」而乱跳。
+
+     估算值按实际卡片的构成算：封面 aspect-ratio 1.62（列宽 190~240px 时约 117~148px）
+     + body 上下 padding 28 + 来源行 17 + 标题两行 62 + 摘要 52 + footer 52 ≈ 330~360px。
+     原先填的 200px 比真实高度低了近四成，700 条时滚动条长度会明显偏短、往下滚一截变长一截。
+     带「收藏时：…」那一行的卡会再高约 20~40px，340px 取的是中位数。 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 340px;
   transition: transform .28s cubic-bezier(.2,.7,.3,1), box-shadow .28s ease, border-color .2s;
   /* fill-mode 只能用 backwards，**不能用 both/forwards**：
      forwards 会让动画结束后永远保留最后一帧（cardIn 的 to 帧是 transform:none），
      而 CSS 动画在样式级联里的优先级**高于行内 style**，于是它会把
      拖拽让位用的行内 transform 整个盖掉（表现：拖了但卡片纹丝不动），
      连带 .card:hover 的「悬停抬起」也一并失效。
-     backwards 只在动画开始前应用首帧；to 帧的值本就和默认样式一致，去掉 forwards 不会有跳变。 */
-  animation: cardIn .4s ease backwards;
+     backwards 只在动画开始前应用首帧；to 帧的值本就和默认样式一致，去掉 forwards 不会有跳变。
+
+     动画本身挪到下面的 :nth-child 规则里，只给首屏那几行 —— 原因见那条注释。 */
 }
+/* 入场动画只给首屏看得见的那几行（约 4 列 × 6 行 = 24 张）。
+   上面给 .card 挂了 content-visibility:auto，屏外的卡片根本不进渲染树，
+   等用户往下滚、它进入视口时才第一次渲染 —— 那一刻如果还挂着 0.4s 的 cardIn，
+   就会看到卡片一张接一张地淡入，长长一条列表滚起来像在一顿一顿地卡。
+   整库 700 张都播的话，这个观感问题比省下的布局开销更明显。 */
+.grid > .card:nth-child(-n+24) { animation: cardIn .4s ease backwards; }
 @keyframes cardIn { from { opacity: 0; transform: translateY(10px) scale(.98); } to { opacity: 1; transform: none; } }
 .card:hover { transform: translateY(-6px); box-shadow: var(--shadow-md); border-color: var(--card-line); }
 /* 整张卡片的普通点击会打开文章，因此静止时用点击指针；
@@ -341,6 +379,16 @@ select:hover { border-color: var(--card-line); }
 .title-link { color: inherit; text-decoration: none; }
 .card h2 { display: -webkit-box; overflow: hidden; min-height: 44px; margin: 11px 0 7px; font-size: 14.5px; line-height: 1.5; letter-spacing: -.2px; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .description { display: -webkit-box; overflow: hidden; height: 52px; margin: 0; color: var(--muted); font-size: 11px; line-height: 1.55; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+/* 「收藏时：原来的标题」。网站几天后改了标题、或者视频下架换成了一句失效提示时，
+   卡片主体显示的是现在那一条，这一行留着当初看到的那一条，方便回忆点开的是什么。
+   只在两版确实不同时才渲染（JS 控制 hidden），所以平时完全不占位。 */
+.title-at-save {
+  display: -webkit-box; overflow: hidden; margin: -2px 0 7px;
+  padding-left: 8px; border-left: 2px solid var(--hairline);
+  color: var(--muted); font-size: 11px; line-height: 1.5;
+  -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+}
+.title-at-save[hidden] { display: none; }
 footer { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 8px; margin-top: 13px; padding-top: 11px; border-top: 1px solid var(--hairline); }
 .read-toggle { border: 0; border-radius: 99px; padding: 6px 11px; background: var(--btn-soft); color: var(--chip-text); font-size: 10.5px; font-weight: 600; transition: background .15s, color .15s; }
 /* 鼠标放到按钮上：整颗变主题色高亮（侧栏那颗同款按钮也是这个效果）。 */
@@ -541,6 +589,15 @@ footer { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-it
 .select-mode { border: 1px solid var(--hairline-2); border-radius: 99px; padding: 7px 16px; background: var(--glass-strong); color: var(--chip-text); font-size: 12.5px; font-weight: 650; box-shadow: var(--shadow-sm); transition: background .15s, color .15s, box-shadow .15s; }
 .select-mode:hover { background: var(--field); }
 .select-mode.active { background: var(--accent); color: #fff; border-color: var(--accent); box-shadow: 0 6px 16px -6px rgba(255,80,50,.6); }
+/* 「关闭已打开」：这个项目的副作用操作，不是导航。和「选择」同族的胶囊，
+   平时安静，悬停才染上橙色——它不该和主操作抢注意力。 */
+.close-tabs {
+  border: 1px solid var(--hairline-2); border-radius: 99px; padding: 7px 14px;
+  background: var(--glass-strong); color: var(--chip-text); font-size: 12.5px; font-weight: 650;
+  box-shadow: var(--shadow-sm); transition: background .15s, color .15s, border-color .15s;
+}
+.close-tabs:hover { background: var(--field); border-color: var(--accent); color: var(--accent); }
+.close-tabs[hidden] { display: none; }
 .grid.selecting .card { cursor: pointer; }
 .grid.selecting .card:hover { transform: none; }
 .select-badge {
