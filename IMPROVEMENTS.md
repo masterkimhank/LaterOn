@@ -209,6 +209,29 @@ if (cur) { if (cur.dataset.currentLabel !== label) ...; if (!cur.classList.conta
 
 ---
 
+## 仓库工程化（2026-10-29，非扩展功能改动）
+
+这一节不改扩展行为，记的是仓库本身从「一份散着改的工作副本」变成「有历史的 fork」的过程。之前的 12 轮改动一直没进版本库，这是当时最大的风险：改坏了没有可回退的点，也说不清某一行是谁、为什么改的。
+
+| 动作 | 结果 |
+|---|---|
+| 远程改名 | `origin` → `upstream`（语义正确：那是作者仓库），等自己的 GitHub fork 建好再加 `origin` |
+| 新建分支 | `dev` 承载所有自己的提交；`main` 继续保持指向上游、不提交 |
+| 基线提交 | `02be377`，36 个文件（12 轮改动 + 文档 + 测试），提交信息按主题分块列出 |
+| 本地提交身份 | `user.name=Joehank`、`user.email=joehank@users.noreply.github.com`（仓库级，非全局） |
+| 测试入口 | `scripts/test-all.js`：并发 4 跑 64 个 `tests/*.test.js`，47s，退出码反映成败 |
+| 规范文档 | `FORK.md`：分支模型、五步流程、提交格式、四类记录分工、上游同步、MIT 合规 |
+| 里程碑 | tag `v1.72.1-my.1`（Chrome 的 `manifest.version` 不接受后缀，后缀只用在 tag 上） |
+| 备份 | 工作区外层 `LaterOn-fork-v1.72.1.bundle`（1.2MB，`git bundle verify` 通过，可完整克隆复原） |
+
+**没做成的一件事**：`git fetch --unshallow upstream` 三次都失败——依次是
+`CRYPT_E_REVOCATION_OFFLINE`（schannel 吊销检查）、`CONNECT tunnel failed 502`（本地代理没起来）、
+`OpenSSL ... unexpected eof`（连接被切断）。所以本地仍是浅克隆，只有 4 个提交的历史。
+影响：`git log` 看不到上游 1.66.1 之前的提交；**推送到 GitHub 前应先补全**，
+否则推上去的历史会有断层。命令见 `FORK.md` 第 6 节。
+
+---
+
 ## 待办（已提出、尚未实施）
 
 | 项 | 说明 |
