@@ -225,11 +225,21 @@ if (cur) { if (cur.dataset.currentLabel !== label) ...; if (!cur.classList.conta
 | 里程碑 | tag `v1.72.1-my.1`（Chrome 的 `manifest.version` 不接受后缀，后缀只用在 tag 上） |
 | 备份 | 工作区外层 `LaterOn-fork-v1.72.1.bundle`（1.2MB，`git bundle verify` 通过，可完整克隆复原） |
 
-**没做成的一件事**：`git fetch --unshallow upstream` 三次都失败——依次是
-`CRYPT_E_REVOCATION_OFFLINE`（schannel 吊销检查）、`CONNECT tunnel failed 502`（本地代理没起来）、
-`OpenSSL ... unexpected eof`（连接被切断）。所以本地仍是浅克隆，只有 4 个提交的历史。
-影响：`git log` 看不到上游 1.66.1 之前的提交；**推送到 GitHub 前应先补全**，
-否则推上去的历史会有断层。命令见 `FORK.md` 第 6 节。
+**补全历史与推送**：`git fetch --unshallow upstream` 一开始三次都失败——`CRYPT_E_REVOCATION_OFFLINE`（schannel 吊销检查）、
+`CONNECT tunnel failed 502`、`OpenSSL ... unexpected eof`。后来逐个排掉，根因是两层：
+
+1. **命令行网络被 WorkBuddy 沙箱接管**。环境变量 `http_proxy=127.0.0.1:9148` 指向的 `sandbox-cli.exe`（WorkBuddy 自己的沙箱网关），不是用户常用的代理；GitHub 的请求被它直接断开（502 / empty reply）。而系统代理实际是 `127.0.0.1:7897`。绕开的办法是让命令在沙箱外运行并把代理指向 7897。
+2. **git 的 schannel 后端在本机连不上**。证书吊销检查走不到 CRL 服务器，即使传 `-c http.schannelCheckRevoke=false` 也不生效，报 `CRYPT_E_REVOCATION_OFFLINE`。换成 `-c http.sslBackend=openssl` 立刻通。
+
+现在已写进仓库本地配置，以后不用每次带参数：
+
+```bash
+git config http.proxy http://127.0.0.1:7897
+git config http.sslBackend openssl
+```
+
+结果：完整历史 **50 个提交**（原先只有 4 个），`origin/dev`、`origin/main`、tag `v1.72.1-my.1` 均已推送。
+中间遇到过一次 `ssl/tls alert handshake failure`（代理节点抖动），原样重试即成功——这类错误不代表配置有问题。
 
 ---
 

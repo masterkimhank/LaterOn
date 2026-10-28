@@ -71,7 +71,7 @@
 ## 6. 跟上游同步
 
 ```bash
-# 只在第一次需要：把浅克隆补成完整历史（否则 diff 不到上游早期提交）
+# 只在第一次需要：把浅克隆补成完整历史（本仓库已补全，共 50 个提交；新 clone 才要跑）
 git fetch --unshallow upstream
 
 # 每次同步
@@ -85,18 +85,28 @@ git checkout dev  && git merge main                       # 把上游更新合�
   处理办法：`CHANGELOG` 保留两边；`version` 取上游的再把本地版本号接上去；`i18n` 按 key 合并。
 - 本仓库文件是 **CRLF**（`core.autocrlf=true`）。换机器 clone 后先确认 `git config core.autocrlf` 是 `true`，
   否则每个文件都会显示成「整个文件被改动」。
-- 网络拉不动时，`git fetch` 报 `schannel` 证书吊销检查失败，可临时加
-  `-c http.schannelCheckRevoke=false`；报 `CONNECT tunnel failed` 说明本地代理没起来，
-  先确认 `127.0.0.1:9148` 的代理在跑。
+- **本机网络的两个坑**（已写进仓库配置，换机器要重配）：
+  ```bash
+  git config http.proxy http://127.0.0.1:7897   # 真实代理是这个端口
+  git config http.sslBackend openssl            # schannel 后端连不上 GitHub
+  ```
+  1. 系统代理是 `127.0.0.1:7897`；如果环境变量里出现 `http_proxy=127.0.0.1:9148`，那是 WorkBuddy
+     沙箱自己的网关，会把 GitHub 的请求断掉（`502` / `empty reply`）。命令行要在沙箱外跑才通。
+  2. git 默认的 `schannel` 后端在本机报 `CRYPT_E_REVOCATION_OFFLINE`（证书吊销检查走不到 CRL 服务器），
+     `-c http.schannelCheckRevoke=false` 也压不住，**必须**换 `openssl` 后端。
+  3. `ssl/tls alert handshake failure`、`unexpected eof` 属于代理节点抖动，原样重试即可，不用改配置。
 
 **推上自己的 fork**：`https://github.com/masterkimhank/LaterOn.git` 已配置为 `origin`
 （换机器时用 `git remote add origin https://github.com/masterkimhank/LaterOn.git` 补上）。
 
 ```bash
-git fetch --unshallow upstream   # 先补全历史，否则推上去是断的
+git fetch --unshallow upstream   # 新机器才需要；本仓库已补全
 git push -u origin dev
 git push origin main             # 可选：让 main 也和上游保持一致
+git push origin v1.72.1-my.1     # 标签要单独推，--tags 会连上游的 tag 一起带上
 ```
+
+现状（2026-10-29）：`origin/dev`、`origin/main`、tag `v1.72.1-my.1` 都已推送。
 
 提交身份已经是 `masterkimhank <masterkimhank@users.noreply.github.com>`（仓库级配置，
 不影响本机其他项目）。要用别的邮箱：`git config user.email <新邮箱>`，之后新提交即生效；
