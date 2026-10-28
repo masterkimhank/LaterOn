@@ -28,8 +28,8 @@
 这样分的好处：上游更新随时能干净地合进来；自己的改动永远有一份完整、可回溯的历史；
 万一哪天不想跟上游了，直接删掉 `upstream` 远程即可，`dev` 不受影响。
 
-远程名已按 fork 惯例改过：`upstream` = 作者仓库。等你在 GitHub 上 fork 出自己的仓库后，
-再把它加为 `origin`（第 6 节最后一段）。
+远程已按 fork 惯例配好：`upstream` = 作者仓库，`origin` = `github.com/masterkimhank/LaterOn`（自己的 fork）。
+推送与换机器时的补配办法见第 6 节末尾。
 
 ## 3. 一次改动的完整流程
 
@@ -89,13 +89,18 @@ git checkout dev  && git merge main                       # 把上游更新合�
   `-c http.schannelCheckRevoke=false`；报 `CONNECT tunnel failed` 说明本地代理没起来，
   先确认 `127.0.0.1:9148` 的代理在跑。
 
-**把自己的分支推上 GitHub**（先在网页上 fork 出 `github.com/<你的用户名>/LaterOn`）：
+**推上自己的 fork**：`https://github.com/masterkimhank/LaterOn.git` 已配置为 `origin`
+（换机器时用 `git remote add origin https://github.com/masterkimhank/LaterOn.git` 补上）。
 
 ```bash
-git remote add origin https://github.com/<你的用户名>/LaterOn.git
+git fetch --unshallow upstream   # 先补全历史，否则推上去是断的
 git push -u origin dev
-git push origin main          # 可选：让 main 也和上游保持一致
+git push origin main             # 可选：让 main 也和上游保持一致
 ```
+
+提交身份已经是 `masterkimhank <masterkimhank@users.noreply.github.com>`（仓库级配置，
+不影响本机其他项目）。要用别的邮箱：`git config user.email <新邮箱>`，之后新提交即生效；
+已经提交过的用 `git rebase --exec 'git commit --amend --reset-author --no-edit' a1a5313` 改。
 
 ## 7. 合规
 

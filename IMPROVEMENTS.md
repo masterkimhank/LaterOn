@@ -1,7 +1,7 @@
 # 改进记录（本分支相对上游的工程记录）
 
 - 上游基线：**1.66.1**（提交 `a1a5313`，MIT，作者 yiiiii）
-- 本分支当前：**1.72.1**（fork 基线提交 `02be377`）
+- 本分支当前：**1.72.1**（fork 基线提交 `5270ebe`）
 - 与 `CHANGELOG.md` 的分工：CHANGELOG 是**面向使用者**的发布说明（发生什么变化、怎么用）；本文件是**面向维护者**的工程记录，写清「为什么改、根因在哪、动了哪些文件、怎么验证」。
 - 分支用法、提交规范、与上游同步的办法，见 `FORK.md`。
 
@@ -217,8 +217,9 @@ if (cur) { if (cur.dataset.currentLabel !== label) ...; if (!cur.classList.conta
 |---|---|
 | 远程改名 | `origin` → `upstream`（语义正确：那是作者仓库），等自己的 GitHub fork 建好再加 `origin` |
 | 新建分支 | `dev` 承载所有自己的提交；`main` 继续保持指向上游、不提交 |
-| 基线提交 | `02be377`，36 个文件（12 轮改动 + 文档 + 测试），提交信息按主题分块列出 |
-| 本地提交身份 | `user.name=Joehank`、`user.email=joehank@users.noreply.github.com`（仓库级，非全局） |
+| 基线提交 | `5270ebe`，36 个文件（12 轮改动 + 文档 + 测试），提交信息按主题分块列出 |
+| 本地提交身份 | `user.name=masterkimhank`、`user.email=masterkimhank@users.noreply.github.com`（仓库级，非全局）；早期占位身份用 `git rebase --exec 'git commit --amend --reset-author --no-edit' a1a5313` 重写 |
+| 远程 | `origin` = `github.com/masterkimhank/LaterOn`（自己的 fork），`upstream` = 作者仓库 |
 | 测试入口 | `scripts/test-all.js`：并发 4 跑 64 个 `tests/*.test.js`，47s，退出码反映成败 |
 | 规范文档 | `FORK.md`：分支模型、五步流程、提交格式、四类记录分工、上游同步、MIT 合规 |
 | 里程碑 | tag `v1.72.1-my.1`（Chrome 的 `manifest.version` 不接受后缀，后缀只用在 tag 上） |
