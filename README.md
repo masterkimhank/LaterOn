@@ -23,12 +23,16 @@ LaterOn 会自动提取网页标题、摘要、封面和来源。已经打开的
 
 ## 1 分钟安装
 
+> 本仓库是 [LaterOn](https://github.com/gaoyiiiii/LaterOn) 的**二次开发版本**。
+> 安装包请从 [Releases](https://github.com/masterkimhank/LaterOn/releases/latest) 下载，
+> 不要用上游的 `main.zip`——那是未改动的原版。改了哪些东西见 [CHANGELOG.md](CHANGELOG.md)。
+
 LaterOn 目前通过开发者模式安装，支持 Chrome / Edge 121 及以上版本。
 
-1. [下载项目 ZIP](https://github.com/gaoyiiiii/LaterOn/archive/refs/heads/main.zip) 并解压。
+1. [下载最新版 ZIP](https://github.com/masterkimhank/LaterOn/releases/latest) 并解压。
 2. 打开 `chrome://extensions/`；Edge 使用 `edge://extensions/`。
 3. 开启右上角的“开发者模式”。
-4. 点击“加载已解压的扩展程序”，选择包含 `manifest.json` 的 `LaterOn-main` 文件夹。
+4. 点击“加载已解压的扩展程序”，选择解压出来、包含 `manifest.json` 的那个文件夹。
 5. 建议在扩展菜单中固定 LaterOn，点击图标即可打开侧栏。
 
 ## 日常使用
