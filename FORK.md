@@ -40,6 +40,7 @@
 3. **补测试**。修 bug 就先写一个能复现它的断言，再改代码。
 4. **写记录**：`CHANGELOG.md` 与 `IMPROVEMENTS.md` 各加一段（分工见第 5 节）。
 5. **提交**（格式见第 4 节），然后去 `chrome://extensions/` 点「重新加载」验证真实行为。
+6. **要发给别人**时按 `RELEASE.md` 发版：`node scripts/release.js --publish` 一次做完测试、打包、打 tag、推送、建 Release。
 
 ## 4. 提交信息规范
 

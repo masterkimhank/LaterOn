@@ -224,6 +224,7 @@ if (cur) { if (cur.dataset.currentLabel !== label) ...; if (!cur.classList.conta
 | 规范文档 | `FORK.md`：分支模型、五步流程、提交格式、四类记录分工、上游同步、MIT 合规 |
 | 里程碑 | tag `v1.72.1-my.1`（Chrome 的 `manifest.version` 不接受后缀，后缀只用在 tag 上） |
 | 备份 | 工作区外层 `LaterOn-fork-v1.72.1.bundle`（1.2MB，`git bundle verify` 通过，可完整克隆复原） |
+| 发版入口 | `scripts/release.js` + `RELEASE.md`：一条命令做完 版本/记录/干净度校验 → 全量测试 → 打包 → 打 tag → 推送 → 建 GitHub Release |
 
 **补全历史与推送**：`git fetch --unshallow upstream` 一开始三次都失败——`CRYPT_E_REVOCATION_OFFLINE`（schannel 吊销检查）、
 `CONNECT tunnel failed 502`、`OpenSSL ... unexpected eof`。后来逐个排掉，根因是两层：

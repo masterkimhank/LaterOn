@@ -1,0 +1,89 @@
+# RELEASE.md — 怎么发一个版本
+
+发版只有一条命令，但前面有三件事要手动做对：**改版本号、写 CHANGELOG、提交**。
+
+```bash
+node scripts/release.js --version 1.73.0     # 1) 升版本号（要求 CHANGELOG 已有 1.73.0 段落）
+git add -A && git commit -m "chore(release): 1.73.0"   # 2) 提交
+node scripts/release.js --publish            # 3) 测试 → 打包 → 打 tag → 推送 → 建 Release
+```
+
+第 3 步内部的顺序是固定的：跑全量测试 → `scripts/build-release.py` 打包 → 打 tag `v1.73.0-my.N`
+→ 推分支与 tag → `gh release create` 把 zip 挂上去。任何一步失败都会停下，不会留下半成品。
+
+## 一、发版前该做的三件事
+
+| 顺序 | 做什么 | 为什么不能省 |
+| --- | --- | --- |
+| 1 | 写 `CHANGELOG.md` 的 `## 1.73.0 — 日期` 段落 | 脚本会把它整段抓出来当 Release 说明；段落少于 40 字直接拒绝发版 |
+| 2 | 写 `IMPROVEMENTS.md` 的对应小节 | 脚本只提醒不拦。但下次改同一块代码时，这节就是你的说明书 |
+| 3 | 升 `manifest.json` 的版本号 | 用 `--version` 参数改，别手改——它会顺手校验 CHANGELOG 段落是否存在 |
+
+版本号规矩（Chrome 硬性限制，不是习惯问题）：
+
+- `manifest.version` **只能是数字和点**：`1.73.0` ✓、`1.73.0-beta` ✗、`1.73.0-my.1` ✗
+- 第三位加号 = 只修 bug；第二位加号 = 加了功能或做了明显优化
+- git tag 用 `v<版本>-my.<序号>`：`v1.73.0-my.1`。序号由脚本自动算，同一版本第二次发就是 `-my.2`
+- 加 `-my` 后缀是为了**不和上游撞名**。上游也发 `v1.73.0` 时，两者 tag 不同，`git fetch upstream` 不会因 tag 冲突报错
+
+## 二、`--publish` 到底做了什么
+
+| 步骤 | 命令 | 失败会怎样 |
+| --- | --- | --- |
+| 跑测试 | `node scripts/test-all.js` | 直接中止，不发版 |
+| 打包 | `python scripts/build-release.py` | 中止；产物在 `dist/LaterOn-<版本>.zip` |
+| 打 tag | `git tag -a v<版本>-my.N` | 中止 |
+| 推送 | `git push origin dev` + `git push origin <tag>` | 网络抖动自动重试 3 次，仍失败则中止（tag 留在本地） |
+| 建 Release | `gh release create <tag> dist/*.zip` | 中止，但 tag 已推上去；去网页手动建 Release 即可 |
+
+想先看结果不发版，去掉 `--publish`：它照样跑测试和打包，只是不打 tag、不推送。
+
+## 三、包里有什么、没有什么
+
+`scripts/build-release.py` 用**显式白名单**（`RUNTIME_FILES`），不是「排除某些文件」。
+这样测试、截图、预览页、文档不会因为疏忽泄漏进用户装的扩展里。打包后还会回读 zip 逐项校验。
+
+- **在包里**：`manifest.json`、全部运行时 js/css/html、图标、`_locales/`、`LICENSE`
+- **不在包里**：`tests/`、`scripts/`、`docs/`、`design/`、任何 `.md`、`preview-*.html`、`.gitignore`、`icon.svg`
+
+> **加新运行时文件时必做**：把文件名加进 `scripts/build-release.py` 的 `RUNTIME_FILES`。
+> 脚本只校验 `manifest.json` 里引用到的文件是否在包内——**HTML 里 `<script src>` 引用的 js 不在校验范围**，
+> 漏加的话包能打成功，装上去却在控制台报 404。这是目前唯一没自动化的盲区。
+
+## 四、Release 页面长什么样
+
+标题：`1.73.0（二次开发版）`
+正文：CHANGELOG 对应段落（脚本自动写入）
+附件：`LaterOn-1.73.0.zip`
+
+想让别人装：
+
+1. 下载 zip 解压到任意固定目录
+2. `chrome://extensions/` → 开「开发者模式」→「加载已解压的扩展程序」→ 选该目录
+3. 提醒对方：**扩展 ID 由文件夹路径派生，换目录会变成新 ID、读不到旧数据**，跨目录迁移要「设置 → 导出 JSON」
+
+## 五、要不要发到 Chrome Web Store
+
+可以，但成本比 GitHub Release 高得多：
+
+| 项 | 情况 |
+| --- | --- |
+| 开发者账号 | 一次性 5 美元注册费 |
+| 审核 | 首次通常 1~3 个工作日，涉及 `<all_urls>` 这类宽权限会被问用途，需写隐私说明 |
+| 名称 | 不能和上游 LaterOn 撞名，需改名，并说明「基于 LaterOn 修改」（MIT 允许，但不得暗示原作者背书） |
+| 更新 | 每次都要重新过审，不能像 GitHub 那样发完即装 |
+| 数据 | 商店版和自己的解压版是**不同扩展 ID**，数据不互通 |
+
+如果只是自己和朋友用，GitHub Release 的 zip 就够了，不必进场。
+
+## 六、常见错误对照
+
+| 报错 | 原因 | 处理 |
+| --- | --- | --- |
+| `CHANGELOG.md 里没有「## x.y.z」这一段` | 版本号改了但没写记录 | 先写 CHANGELOG 再升版本 |
+| `CHANGELOG「## x.y.z」这段太短` | 只写了一行标题 | 补上「改了什么 / 影响谁」 |
+| `有未提交的改动，先提交再发版` | `git status` 不干净 | 提交（或 stash）后再 `--publish` |
+| `测试没全绿，不发版` | 有测试挂了 | 修好再发；`--skip-test` 只用于纯文档改动 |
+| `Release build failed: Manifest references files outside the release allowlist` | manifest 引用了新文件但没进白名单 | 加进 `RUNTIME_FILES` |
+| `推送失败：... handshake failure` | 代理节点抖动 | 脚本会自动重试 3 次；仍失败就手动 `git push` |
+| `gh 没登录` | token 过期 | `gh auth login` |
