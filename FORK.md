@@ -28,6 +28,11 @@
 这样分的好处：上游更新随时能干净地合进来；自己的改动永远有一份完整、可回溯的历史；
 万一哪天不想跟上游了，直接删掉 `upstream` 远程即可，`dev` 不受影响。
 
+> **GitHub 上的默认分支已设为 `dev`**（2026-10-29 用 `gh repo edit --default-branch dev` 改的）。
+> 仓库首页、README 渲染、`/archive/refs/heads/...` 默认都走 `dev`。
+> 不设的话，点进仓库看到的是 `main`——那是上游 1.66.1 的原版，一行改动都没有。
+> `main` 仍然刻意保留为上游镜像，它看起来「落后」是设计如此，不是忘了同步。
+
 远程已按 fork 惯例配好：`upstream` = 作者仓库，`origin` = `github.com/masterkimhank/LaterOn`（自己的 fork）。
 推送与换机器时的补配办法见第 6 节末尾。
 
