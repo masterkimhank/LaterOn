@@ -20,6 +20,7 @@
 | 1.72.1 | 2026-10-27 | 修 bug | 自查修掉上版优化自己带出来的 5 个问题 | `library.js` `sidepanel.js` `library.css` `sidepanel.css` | `current-highlight-persist.test.js`（14 项）、`panel-current-highlight.test.js`（护栏） |
 | — | 2026-10-29 | 测试基建 | 真浏览器端到端测试，补上 jsdom 测不到的界面与链路 | `scripts/test-e2e.js` `tests/e2e/*` `package.json` | 4 个 spec，72 条断言 |
 | — | 2026-10-29 | 稳定性 | 固定扩展 ID，换目录/换机器不再丢数据 | `manifest.json` `scripts/extension-id.js` `tests/extension-id.test.js` `tests/e2e/extension-smoke.spec.js` `tests/release-package-hygiene.test.js` | `extension-id.test.js`（10 项）、e2e 换目录实测（2 项） |
+| — | 2026-10-29 | 新功能 | 侧栏补上搜索范围开关（全部 / 等待整理） | `sidepanel.html` `sidepanel.css` `sidepanel.js` `i18n.js` | `sidepanel-search-scope.test.js`（18 项）、e2e 追加 7 项 |
 
 ---
 
@@ -103,6 +104,81 @@
 4. **迁移顺序不能反**。加 key 之后老用户的 ID 会变，旧数据仍留在旧 ID 下但读不出来。
    必须「先导出 JSON → 再重新加载 → 再导入」，写反了就只能去 profile 的
    `Local Extension Settings/<旧 ID>/` 手动捞 leveldb。这一点只能靠文档提前说清。
+
+---
+
+## 未发布 — 侧栏搜索范围开关（2026-10-29）
+
+**来源**：1.67.0 只给完整界面加了「全部 / 等待整理」范围开关，侧栏一直缺（记在待办里）。
+
+### 根因
+
+侧栏 `render()` 里把「搜索是全局的」写成了硬编码：
+
+```js
+const matchesProject = !!query
+  || activeProject === "all"
+  || (activeProject === "unfiled" ? !item.projectId : item.projectId === activeProject);
+```
+
+`!!query` 一旦为真就短路成 `true`，范围概念根本不存在。这本身是**正确**的默认（全局搜索），
+问题在于没有任何办法临时收窄 —— 整理待整理时想知道「这条归好类没有」，全库结果里混着已经
+归好类的条目，反而看不出来。
+
+### 改法
+
+把 `!!query` 换成三态判断，并补一套和完整界面同语义的状态：
+
+```js
+const matchesProject = query
+  ? (searchingInboxOnly() ? !item.projectId : true)
+  : (activeProject === "all"
+      || (activeProject === "unfiled" ? !item.projectId : item.projectId === activeProject));
+```
+
+- `searchScope` 不持久化：它是一个临时的观察角度，不是设置项。关掉侧栏就该忘掉。
+- 拨动时同步三件事：开关高亮、输入框占位文字（「搜索等待整理」）、搜索框描边（`is-scoped`，橙边）。
+- 切项目时 `resetSearchScope()` 收回默认档 —— 两处触发：点项目筛选条、另一个视图改了项目
+  （`onChanged` 里的 `ACTIVE_PROJECT_KEY` 分支）。
+- 空结果的说法分档：`syncEmptyText()` 按「有没有搜索词 × 范围」选文案，不再一律
+  「还没有添加的网页」。
+
+### 动到的文件
+
+| 文件 | 改动 |
+|---|---|
+| `sidepanel.html` | `.search` 由 `<label>` 改成 `<div role="search">`，加入 `.search-scope` 两个按钮；骨架屏 `.sk-search` 高度 36 → 43px |
+| `sidepanel.css` | 输入框改 `flex:1 1 auto`（给开关让位）、`.search-scope` / `.scope-option` / `.is-scoped` 样式 |
+| `sidepanel.js` | `searchScope` 状态、`searchingInboxOnly` / `syncSearchScopeUI` / `setSearchScope` / `resetSearchScope` / `syncEmptyText`；`render()` 三态判断；切项目两处重置；语言就绪后补一次 UI 同步 |
+| `i18n.js` | 新增 `sideNoMatchesHint`（中英），因为完整界面那句写的是「切换**顶部**的筛选」，侧栏的筛选在搜索框下面 |
+| `tests/sidepanel-search-scope.test.js` | 新增 18 项 |
+| `tests/e2e/sidepanel-render.spec.js` | 新增 7 项（真点击、真收窄、320px 不溢出） |
+
+### 验证
+
+反向实验：把 `render()` 里的三态判断改回 `? true`（等于范围开关不生效），
+`sidepanel-search-scope.test.js` 恰好 6 条报红，恢复后 18/18。
+
+e2e 里 `page.locator('.scope-option[data-scope="unfiled"]').click()` 被遮挡会直接超时，
+所以「点得动」这件事是顺带被证明的，不需要额外断言。
+
+320px 实测：`scrollWidth=320 / clientWidth=320`，输入框仍有 171px（开关占 86px），不溢出。
+
+### 踩坑
+
+1. **`.search` 原来是 `<label>`，里面放按钮会把点击转发给输入框**。完整界面当年已经踩过
+   这个坑（那里留了注释），侧栏照抄结论换成 `div`，并把「点图标/留白聚焦输入框」这条
+   手动补回来（`searchBox` 上挂 click，排除 `.scope-option`）。单测里专门断言了
+   `#searchBox` 的 `tagName === "DIV"`，防止有人改回去。
+2. **骨架屏高度是写死的**。`.sk-search { height: 36px }` 对上的是旧搜索框（35px），
+   加了开关之后真界面变成 43px，首屏会看到骨架比真内容矮 7px、然后跳一下。已同步改 43。
+3. **空状态文案不能直接复用完整界面那句**。`noMatchesHint` 写的是「切换**顶部**的阅读状态
+   筛选」，而侧栏的「未读 / 已读」在搜索框**下面**。照搬会让人往上看。新增
+   `sideNoMatchesHint`，并在测试里断言它包含「下面」且不含「顶部」。
+4. **e2e 里 `waitFor(n === 3)` 可能等到的是「旧状态」**。追加数据后我原本等 3 条，
+   而旧数据本来就是 3 条 —— 条件立刻成立，新数据其实还没渲染，后面点开关就等不到 2 条、
+   超时失败。改成等 4 条（新数据到达才可能出现的值）。这类「假等待」静默吞掉一次真实的
+   失败，比报错更难查。
 
 ---
 
@@ -496,7 +572,6 @@ git config http.sslBackend openssl
 
 | 项 | 说明 |
 |---|---|
-| 侧栏搜索范围开关 | 1.67.0 只改了全屏页，侧栏仍是纯全局搜索 |
 | 侧栏「按项目关闭已打开」 | 1.69.0 的入口只在全屏页，侧栏没有 |
 | P1：列表 / 详情分离 + 单条写单条 | `laterOnItems` 只留索引字段，摘要与封面按 id 分键；单键 345KB → ~80KB。需写数据迁移与老导出文件兼容 |
 | P2：卡片视图虚拟滚动或「加载更多」 | 首屏从 700 张降到视口规模，5,000 条仍流畅 |
