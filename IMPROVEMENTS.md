@@ -18,6 +18,7 @@
 | 1.71.0 | 2026-10-24 | 修 bug | 标题被网站「新标题」顶掉，改为保留「收藏时」那一版 | `background.js` `library.*` `sidepanel.*` `i18n.js` | `title-snapshot-background.test.js`（7 组）、`title-at-save-line.test.js`（16 项） |
 | 1.72.0 | 2026-10-27 | 性能优化 | 700 条量级六项优化（渲染 / 高亮 / 下拉 / 增量更新） | `library.js` `sidepanel.js` `library.css` `sidepanel.css` | `bench-700.js`（基准）、`incremental-update.test.js`（18 项） |
 | 1.72.1 | 2026-10-27 | 修 bug | 自查修掉上版优化自己带出来的 5 个问题 | `library.js` `sidepanel.js` `library.css` `sidepanel.css` | `current-highlight-persist.test.js`（14 项）、`panel-current-highlight.test.js`（护栏） |
+| — | 2026-10-29 | 测试基建 | 真浏览器端到端测试，补上 jsdom 测不到的界面与链路 | `scripts/test-e2e.js` `tests/e2e/*` `package.json` | 4 个 spec，72 条断言 |
 
 ---
 
@@ -343,6 +344,67 @@ git config http.sslBackend openssl
 
 结果：完整历史 **50 个提交**（原先只有 4 个），`origin/dev`、`origin/main`、tag `v1.72.1-my.1` 均已推送。
 中间遇到过一次 `ssl/tls alert handshake failure`（代理节点抖动），原样重试即成功——这类错误不代表配置有问题。
+
+---
+
+## 端到端测试：把「只能靠肉眼」的那半边补上（2026-10-29）
+
+**起因**：本机 `chrome --headless` 加载不了扩展（`--dump-dom` 连输出都没有），所以过去所有界面改动
+都只能「按 CSS 推算 + 装进浏览器手点一遍」。推算错过几次：透明封面透底那轮，就是先按叠加层
+想当然、后来才发现必须 `display:none` 才干净。
+
+**关键前提（先验证再动手）**：Playwright 自带的 Chromium 用 `channel: "chromium"` 启动时是
+**新版无头模式（new headless）**，它是完整 Chrome，**支持 `--load-extension`**。
+`headless: true` + `channel: "chromium"` 实测拿到了 service worker、`chrome.storage`、扩展 ID，
+所以整套测试可以无头跑，不需要开窗口、不需要人盯。这一点推翻了「本机不能无头测扩展」的旧结论。
+
+**做法**
+
+| 层 | 文件 | 职责 |
+|---|---|---|
+| 运行器 | `scripts/test-e2e.js` | 扫 `tests/e2e/*.spec.js`，**串行**跑（每个 spec 一个 Chromium，并发会互相拖慢+假红），单 spec 超时 5 分钟强杀，支持 `--filter=` / `--headed` |
+| 公共设施 | `tests/e2e/helpers.js` | 起扩展（独立 profile，storage 天然隔离）、本地静态站点（不依赖外网）、预置 storage、`swEval`（worker 被回收时自动重取重试）、`openPage`、`dismissOnboarding`、`waitFor` |
+| 用例 | `tests/e2e/*.spec.js` | 见下表 |
+| 依赖 | `package.json` / `package-lock.json` | **只**放测试依赖（jsdom、playwright），扩展运行时不读它，打包白名单也不含它 |
+
+| spec | 覆盖 | 断言数 |
+|---|---|---|
+| `extension-smoke` | 扩展装没装上、manifest/package 版本一致、**白名单 38 个文件在扩展内全部可取**、storage 读写、三个入口页能开且不报错 | 20 |
+| `sidepanel-render` | 新手引导出现且是模态、骨架屏让位、透明封面隐藏占位砖、坏封面降级后占位回来、三颗按钮不重叠、320/400px 不溢出、三档筛选 | 18 |
+| `save-current-page` | 真点「＋」→ 后台抓 og:title/og:image/description → 写 storage → 侧栏出卡片且封面解码成功 → 按钮变已收藏 → 重开仍在 | 16 |
+| `library-actions` | 卡片网格布局无重叠不溢出、搜索命中/落空/清空、Ctrl+点击开新标签、普通点击当前页跳转、标已读写回存储且不误伤其它条目 | 18 |
+
+**踩到的坑（都会反复咬人，记下来）**
+
+1. **`npm install` 会清掉没登记的依赖**。仓库原本没有 `package.json`，jsdom 是 `--no-save` 装的；
+   一装 playwright，npm 判定 node_modules 里 36 个包「多余」，直接删了，jsdom 当场不可用。
+   修法：补 `package.json` 把 jsdom 和 playwright 都登记成 devDependencies，并提交 lock。
+2. **首次安装必弹新手引导**，它是 `position:fixed` 的全屏模态，会拦住所有点击。
+   第一版测试全部断言通过、只有点击超时，查了半天才发现是被引导挡住（`elementFromPoint`
+   返回的是引导里的 `<img>`）。修法：`openPage` 默认跳过引导并提供 `onboarding:"keep"`，
+   想做引导断言的用例自己处理。
+3. **引导的 `opacity` 停在 0**：无头环境下过渡动画不推进，`is-visible` 有了但透明度还是 0。
+   Playwright 的 `visible` 只看 bounding box，所以「可见」判定不受影响，别去等 opacity。
+4. **列表是分批渲染的**（先画第一屏，其余 `requestIdleCallback` 续画）。开局就读
+   `.item` 数量会读到半张列表，后续「切回全部应该 3 条」必然失败。修法：所有计数都先等
+   到目标值，不读瞬时值。
+5. **浏览器自己会去要 `/favicon.ico`**，本地静态站点没这个路由 → 一条假的 404 报错被算进
+   「控制台干净」断言。修法：站点默认返回 204，别在断言里用宽泛的正则把真错误一起放过。
+6. **库页点卡片不是「开新标签页」**。`library.js` 的 `openItem()` 会 `preventDefault`，
+   先开侧栏、再把**收藏库这个标签本身**导航到文章（`chrome.tabs.update`）。
+   一开始按 `target="_blank"` 写成等 popup 事件，等 15 秒也不会来。现在两条路径分开测：
+   带 Ctrl 点击 → 新标签页；普通点击 → 当前页导航。**这类「代码写着 A、实际行为是 B」
+   正是端到端测试最该抓的东西**，写断言前必须先读实现。
+7. **开发目录加载 ≠ 发布包**。扩展自己的页面能 fetch 到根目录的 `README.md`、`package.json`，
+   所以在开发目录上断言「这些文件访问不到」必然失败，且不能说明打包有问题。
+   该断言只属于 `release-package-hygiene.test.js`（它直接拆 zip）。
+
+**验证**
+
+- `node scripts/test-e2e.js` → 4/4 spec 通过，79 秒（单 spec 3~33 秒）。
+- `node scripts/test-all.js` → 70/70 文件通过，53 秒（升级到 jsdom 30 后无回归）。
+- 反证：把 `sidepanel.css` 里 `.thumb-img ~ .thumb-placeholder{display:none}` 删掉，
+  `sidepanel-render` 立刻在「透明封面隐藏占位砖」一条上报红，其它断言不受影响。
 
 ---
 

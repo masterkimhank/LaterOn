@@ -12,7 +12,7 @@
 | 开源协议 | MIT，`Copyright (c) 2026 yiiiii` |
 | 分叉点 | 提交 `a1a5313`（License LaterOn under MIT…） |
 | 本分支基线 | 版本 `1.72.1`，见 `git log` 里的「feat: fork 基线」 |
-| 技术形态 | Chrome MV3 扩展，无构建、无框架，纯 JS 直接加载 |
+| 技术形态 | Chrome MV3 扩展，无构建、无框架，纯 JS 直接加载（`package.json` 只声明测试依赖，扩展运行时不读它） |
 | 数据存放 | `chrome.storage.local` 的 `laterOnItems` 单键，按扩展 ID 隔离 |
 
 协议允许 fork、改名、闭源分发、商用，条件是**保留 LICENSE 文件与版权声明**，
@@ -39,9 +39,13 @@
 ## 3. 一次改动的完整流程
 
 1. **改代码**。只解决一个问题，别顺手重构旁边的文件。
-2. **跑测试**：`node scripts/test-all.js`（没有 `package.json`，每个 `tests/*.test.js` 是独立进程，按退出码判定）。
+2. **跑测试**：`node scripts/test-all.js`（每个 `tests/*.test.js` 是独立进程，按退出码判定）。
    - 只跑一部分：`node scripts/test-all.js --filter=library`
    - 改了渲染 / 性能相关的东西，再跑 `node tests/bench-700.js` 对比数字。
+   - **改到了界面、布局、交互**（HTML/CSS/DOM 顺序、按钮位置、点击行为），再跑一遍
+     `node scripts/test-e2e.js`：那 4 个 spec 在真 Chromium 里装真扩展，能查出
+     jsdom 查不到的问题（封面透底、按钮重叠、窄侧栏溢出、打包漏文件）。
+     第一次用要先 `npm install` + `npx playwright install chromium`。
 3. **补测试**。修 bug 就先写一个能复现它的断言，再改代码。
 4. **写记录**：`CHANGELOG.md` 与 `IMPROVEMENTS.md` 各加一段（分工见第 5 节）。
 5. **提交**（格式见第 4 节），然后去 `chrome://extensions/` 点「重新加载」验证真实行为。

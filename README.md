@@ -140,5 +140,8 @@ Chrome 内部页面、扩展商店、浏览器内置 PDF 查看器等受保护�
 - [FORK.md](FORK.md)：分支怎么用、一次改动的完整流程、怎么跟上游同步
 - [IMPROVEMENTS.md](IMPROVEMENTS.md)：每处改动的根因、动了哪些文件、怎么验证
 - [RELEASE.md](RELEASE.md)：发一个版本（打包 + 上传 GitHub Release）
-- `node scripts/test-all.js`：跑全量测试（64 个文件，约 50 秒）
+- `node scripts/test-all.js`：跑全量单元测试（70 个文件，约 50 秒，jsdom）
+- `node scripts/test-e2e.js`：跑真浏览器端到端测试（4 个 spec，约 80 秒，真 Chromium + 真扩展）
+  - 第一次用要先装依赖：`npm install` 然后 `npx playwright install chromium`
+  - 加 `--headed` 可以看着浏览器跑，改界面时比较直观
 - `node scripts/release.js`：发版一条龙，不带参数时只演练不发布
