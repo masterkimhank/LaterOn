@@ -76,6 +76,12 @@ jobs:
           VERSION="${VERSION%%-my.*}"
           ZIP="dist/LaterOn-${VERSION}.zip"
           test -f "$ZIP" || { echo "没有找到 $ZIP，先看打包步骤"; exit 1; }
+          # 本地 release.js --publish 已经发过的话这里直接跳过，别把构建标红：
+          # 两条路都会推 tag，谁后到都会看到 Release 已经存在。
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::notice::$TAG 的 Release 已经存在，跳过（本地已发过）"
+            exit 0
+          fi
           # --verify-tag：tag 不存在就失败，不会凭空造一个；标题带 -my.N，
           # 免得同一个版本号发过几次后列表里出现两条一模一样的标题
           gh release create "$TAG" "$ZIP" \

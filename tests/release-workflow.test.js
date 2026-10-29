@@ -91,6 +91,8 @@ check("Release 挂上 zip 与说明文件",
   /gh release create "\$TAG" "\$ZIP"/.test(WORKFLOW) && /--notes-file "\$RUNNER_TEMP\/release-notes\.md"/.test(WORKFLOW));
 check("zip 名从 tag 里推出 manifest 版本（去掉 -my.N）",
   /VERSION="\$\{VERSION%%-my\.\*\}"/.test(WORKFLOW));
+check("Release 已存在时跳过（本地 release.js 发过一遍，不能让 CI 标红）",
+  /gh release view "\$TAG"[\s\S]{0,120}exit 0/.test(WORKFLOW));
 check("YAML 缩进没用 Tab（GitHub 会直接解析失败）", !/^\t/m.test(WORKFLOW));
 
 console.log("\n── 第 6 步：工作流与脚本的接口对得上 ──");
