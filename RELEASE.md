@@ -19,6 +19,12 @@ node scripts/release.js --publish            # 3) 测试 → 打包 → 打 tag 
 | 2 | 写 `IMPROVEMENTS.md` 的对应小节 | 脚本只提醒不拦。但下次改同一块代码时，这节就是你的说明书 |
 | 3 | 升 `manifest.json` 的版本号 | 用 `--version` 参数改，别手改——它会顺手校验 CHANGELOG 段落是否存在 |
 
+另外一件事，不在上面三步里，但**改了界面 / 布局 / 交互就必须做**：跑一次
+`node scripts/test-e2e.js`。它故意没接进 `release.js` 的自动化链路（要额外下 Chromium，
+会把发版拖长），但它是唯一能发现「卡片按钮叠在一起」「透明封面透出 Logo 砖」
+「侧栏 320px 横向溢出」「白名单漏文件导致发出去的包 404」这类问题的检查——
+这些在 jsdom 里全都看不出来。
+
 版本号规矩（Chrome 硬性限制，不是习惯问题）：
 
 - `manifest.version` **只能是数字和点**：`1.73.0` ✓、`1.73.0-beta` ✗、`1.73.0-my.1` ✗
