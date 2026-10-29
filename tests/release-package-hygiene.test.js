@@ -46,7 +46,19 @@ const listZip = (version) => {
   return JSON.parse(result.stdout);
 };
 
+/** 读出包内某个文件的内容（用来核对 manifest 有没有被改过）。 */
+const readZipFile = (version, name) => {
+  const file = `dist/LaterOn-${version}.zip`;
+  // 注意别用 json.dumps 包一层：那会得到一个"字符串的 JSON"，解析出来还是字符串。
+  const script = "import zipfile,sys;sys.stdout.write(zipfile.ZipFile(sys.argv[1]).read(sys.argv[2]).decode('utf-8'))";
+  const result = py(["-c", script, file, name]);
+  if (result.status !== 0) throw new Error(`读取 ${file} 里的 ${name} 失败：${result.stderr}`);
+  return result.stdout;
+};
+
 const manifestVersion = JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8")).version;
+const manifestKey = JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8")).key;
+const { idFromManifestKey } = require(path.join(ROOT, "scripts", "extension-id.js"));
 
 // 注入 / 回收测试文件：无论中间怎么失败都要删干净，不然会污染仓库。
 const injected = [];
@@ -73,6 +85,15 @@ async function main() {
   check("_locales 仍在包里（没有过滤过头）",
     baseNames.includes("_locales/zh_CN/messages.json") && baseNames.includes("_locales/en/messages.json"),
     `${baseNames.filter((name) => name.startsWith("_locales/")).length} 个语言文件`);
+
+  // 发布包里的 manifest.key 决定用户装上之后的扩展 ID。丢了 key，每个人都得到
+  // 一个随路径变化的 ID，数据就互相看不见了 —— 而这件事在本地开发时完全正常。
+  const packedManifest = JSON.parse(readZipFile(manifestVersion, "manifest.json"));
+  check("包内 manifest 保留了 key", typeof packedManifest.key === "string" && packedManifest.key.length > 0);
+  check("包内 key 推出的 ID 与仓库一致",
+    idFromManifestKey(packedManifest.key) === idFromManifestKey(manifestKey),
+    idFromManifestKey(packedManifest.key));
+  check("包内没有私钥（extension-key.pem）", !baseNames.some((name) => name.endsWith(".pem")));
 
   console.log("\n── 第 2 步：子目录里的 .DS_Store 不能进包 ──");
   inject("_locales/en/.DS_Store", "macos junk");

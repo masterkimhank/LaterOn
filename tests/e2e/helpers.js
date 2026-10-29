@@ -110,16 +110,25 @@ ${image ? `<meta property="og:image" content="${image}" />` : ""}
  * 启动一个装了 LaterOn 的浏览器实例。
  * 每个实例用独立 profile 目录，`chrome.storage.local` 天然隔离，
  * 测试之间不会互相看到对方的收藏。
+ *
+ * 传 profileDir + keepProfile 可以让两个实例共用同一份 profile 数据，
+ * 用来验证「换扩展目录、收藏还在不在」（`chrome.storage` 是按 profile + 扩展 ID 存的）。
+ * 传 extensionPath 可以加载另一个目录里的同一份扩展（比如发布包解压出来的）。
  */
-async function launchExtension({ headless = !process.env.LATERON_E2E_HEADED, viewport } = {}) {
-  const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), "lateron-e2e-"));
+async function launchExtension({
+  headless = !process.env.LATERON_E2E_HEADED,
+  viewport,
+  extensionPath = EXT_ROOT,
+  profileDir: reuseProfile,
+} = {}) {
+  const profileDir = reuseProfile || fs.mkdtempSync(path.join(os.tmpdir(), "lateron-e2e-"));
   const context = await chromium.launchPersistentContext(profileDir, {
     channel: "chromium", // 新版无头：唯一能加载扩展的无头模式
     headless,
     viewport: viewport || { width: 1280, height: 900 },
     args: [
-      `--disable-extensions-except=${EXT_ROOT}`,
-      `--load-extension=${EXT_ROOT}`,
+      `--disable-extensions-except=${extensionPath}`,
+      `--load-extension=${extensionPath}`,
       "--no-first-run",
       "--no-default-browser-check",
     ],
@@ -149,9 +158,9 @@ async function launchExtension({ headless = !process.env.LATERON_E2E_HEADED, vie
     profileDir,
     /** 扩展页面的完整 URL。 */
     url: (file) => `chrome-extension://${extensionId}/${file}`,
-    async close() {
+    async close({ keepProfile = false } = {}) {
       await context.close().catch(() => {});
-      fs.rmSync(profileDir, { recursive: true, force: true });
+      if (!keepProfile) fs.rmSync(profileDir, { recursive: true, force: true });
     },
   };
   return api;

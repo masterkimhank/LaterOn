@@ -2,6 +2,11 @@
 .workbuddy/
 dist/
 node_modules/
+
+# 扩展签名私钥：manifest.key 是公钥（可公开），私钥只留在本机。
+# 泄露的私钥不能冒充你上架，但足以让别人签出同一个扩展 ID。
+extension-key.pem
+*.pem
 tests/board-preview.html
 tests/dialog-preview.html
 tests/picker-preview.html

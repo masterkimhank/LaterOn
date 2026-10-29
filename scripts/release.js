@@ -89,7 +89,23 @@ if (wanted && wanted !== true) {
   console.log(`· manifest.json 版本 → ${version}（记得和 CHANGELOG 一起提交）`);
 }
 
-// ── 2. 校验记录与分支 ────────────────────────────────────
+// ── 2. 扩展 ID 必须在，而且是能算出来的 ──────────────────
+// 发布包里少了 manifest.key，每个用户装出来都会得到一个随文件夹路径变化的 ID：
+// 收藏看不见、同步配置读不到，而且完全不报错 —— 只有用户自己发现「我的收藏没了」。
+// 这是发版级事故，直接拦住，不给「跳过」的口子。
+try {
+  const { idFromManifestKey } = require("./extension-id");
+  const key = JSON.parse(fs.readFileSync(manifestPath, "utf8")).key;
+  console.log(`· 扩展 ID（由 manifest.key 决定）：${idFromManifestKey(key)}`);
+} catch (error) {
+  fail(
+    `manifest.json 的 key 有问题，不敢发：${error.message}\n` +
+      `  没有 key 的包，用户装出来的扩展 ID 会随目录变化，收藏全部读不到。\n` +
+      `  生成一把：node scripts/extension-id.js --generate`
+  );
+}
+
+// ── 3. 校验记录与分支 ────────────────────────────────────
 // CHANGELOG 段落的抽取和「这段太短就拒发」的判断都在 scripts/release-notes.js 里：
 // 打 tag 自动发版的 GitHub Actions 用的是同一份实现，本地和 CI 的说明必须一致。
 const { notesFor } = require("./release-notes");
@@ -115,7 +131,7 @@ if (dirty) {
   if (has("publish")) fail("有未提交的改动，先提交再发版（否则打出去的包和 tag 对不上仓库里的代码）");
 }
 
-// ── 3. 测试 ──────────────────────────────────────────────
+// ── 4. 测试 ──────────────────────────────────────────────
 if (!has("skip-test")) {
   console.log("· 跑测试（约 50s，--skip-test 可跳过）…");
   const t = run(process.execPath, [path.join(ROOT, "scripts", "test-all.js")]);
@@ -129,7 +145,7 @@ if (!has("skip-test")) {
   console.log("· 跳过测试（--skip-test）");
 }
 
-// ── 4. 打包 ──────────────────────────────────────────────
+// ── 5. 打包 ──────────────────────────────────────────────
 const build = run(process.platform === "win32" ? "python" : "python3", [path.join("scripts", "build-release.py")]);
 if (!build.ok) fail(`打包失败：\n${build.out}`);
 console.log(`  ${build.out.split("\n")[0]}`);
@@ -138,7 +154,7 @@ const zipPath = path.join(DIST, `LaterOn-${version}.zip`);
 if (!fs.existsSync(zipPath)) fail(`没找到预期产物 ${zipPath}`);
 const zipKb = (fs.statSync(zipPath).size / 1024).toFixed(1);
 
-// ── 5. tag（本地已存在同版本 tag 时自动接 .2 / .3）───────
+// ── 6. tag（本地已存在同版本 tag 时自动接 .2 / .3）───────
 const tags = run("git", ["tag", "-l", `v${version}-my.*`]).out.split("\n").filter(Boolean);
 const nextSeq = tags.reduce((max, t) => Math.max(max, Number(t.split(".").pop()) || 0), 0) + 1;
 const forcedTag = arg("tag");
@@ -165,7 +181,7 @@ if (!has("publish")) {
   process.exit(0);
 }
 
-// ── 6. 发布 ──────────────────────────────────────────────
+// ── 7. 发布 ──────────────────────────────────────────────
 const gh = ghBinary();
 if (!gh) fail("找不到 gh。装一个（winget install --id GitHub.cli -e）或去掉 --publish 手动发");
 if (!run(gh, ["auth", "status"]).ok) fail("gh 没登录：先在终端跑 gh auth login");
