@@ -13,7 +13,7 @@
 | 分叉点 | 提交 `a1a5313`（License LaterOn under MIT…） |
 | 本分支基线 | 版本 `1.72.1`，见 `git log` 里的「feat: fork 基线」 |
 | 技术形态 | Chrome MV3 扩展，无构建、无框架，纯 JS 直接加载（`package.json` 只声明测试依赖，扩展运行时不读它） |
-| 数据存放 | `chrome.storage.local` 的 `laterOnItems` 单键，按扩展 ID 隔离 |
+| 数据存放 | `chrome.storage.local` 的 `laterOnItems` 单键，按扩展 ID 隔离；ID 已用 manifest 的 `key` 固定为 `ahfghclmnedaflabdpffhdbbdhjikjme`，不随目录变化 |
 
 协议允许 fork、改名、闭源分发、商用，条件是**保留 LICENSE 文件与版权声明**，
 且不能用原作者名义为自己的版本背书（详见第 7 节）。
@@ -132,8 +132,22 @@ git push origin v1.72.1-my.1     # 标签要单独推，--tags 会连上游的 t
 
 1. `chrome://extensions/` → 打开「开发者模式」→「加载已解压的扩展程序」→ 选本目录。
 2. 改完代码必须点该扩展的**「重新加载」**（圆形箭头）才生效；**不要点「移除」**，移除会连数据一起清掉。
-3. 未打包扩展的 ID 由文件夹**绝对路径**派生，换目录会变成新 ID、读不到旧数据。
-   迁移数据的办法：旧版本「设置 → 导出 JSON」，新版本导入。
+3. 扩展 ID 由 `manifest.json` 里的 `key` 固定为 `ahfghclmnedaflabdpffhdbbdhjikjme`，
+   换目录、换机器都是同一个扩展，数据跟着走。查当前 ID：`node scripts/extension-id.js`。
+
+### 公钥与私钥
+
+| 文件 | 是什么 | 在哪 |
+| --- | --- | --- |
+| `manifest.json` 的 `key` | 公钥（base64 的 DER），**ID 由它算出** | 提交进仓库，会进发布包 |
+| `extension-key.pem` | 私钥（PKCS#8），签 `.crx` / 上商店才用 | 只在本地，`.gitignore` 已排除 |
+
+- 想换一把密钥：`node scripts/extension-id.js --generate --force`，然后把它打印的
+  `"key": "..."` 换进 manifest。**换钥匙 = 换 ID = 老用户数据全部读不到**，等同一次数据迁移，
+  非必要不要做。
+- 核对「私钥是不是 manifest 里那把公钥的」：`node scripts/extension-id.js`，
+  会打印 ID 并给出 ✓ / ✗。拿错私钥去签名，上架后 ID 会与用户手上那个不一致。
+- 私钥丢了不影响使用：日常分发用的是 `key`（公钥），不需要私钥。只有要重新签名 `.crx` 时才会用到它。
 
 ## 9. 已记录的改动索引
 

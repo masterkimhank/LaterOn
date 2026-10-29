@@ -19,6 +19,90 @@
 | 1.72.0 | 2026-10-27 | 性能优化 | 700 条量级六项优化（渲染 / 高亮 / 下拉 / 增量更新） | `library.js` `sidepanel.js` `library.css` `sidepanel.css` | `bench-700.js`（基准）、`incremental-update.test.js`（18 项） |
 | 1.72.1 | 2026-10-27 | 修 bug | 自查修掉上版优化自己带出来的 5 个问题 | `library.js` `sidepanel.js` `library.css` `sidepanel.css` | `current-highlight-persist.test.js`（14 项）、`panel-current-highlight.test.js`（护栏） |
 | — | 2026-10-29 | 测试基建 | 真浏览器端到端测试，补上 jsdom 测不到的界面与链路 | `scripts/test-e2e.js` `tests/e2e/*` `package.json` | 4 个 spec，72 条断言 |
+| — | 2026-10-29 | 稳定性 | 固定扩展 ID，换目录/换机器不再丢数据 | `manifest.json` `scripts/extension-id.js` `tests/extension-id.test.js` `tests/e2e/extension-smoke.spec.js` `tests/release-package-hygiene.test.js` | `extension-id.test.js`（10 项）、e2e 换目录实测（2 项） |
+
+---
+
+## 未发布 — 固定扩展 ID（2026-10-29）
+
+**来源**：分析 `NHZEX/LaterOn-browser-ext` 时发现对方在 manifest 里带 `key`，对比之下我们这里是个空白。
+
+### 根因
+
+开发者模式加载的扩展，manifest 里没有 `key` 时，Chrome 用**扩展目录的绝对路径**派生 ID：
+对路径做 SHA-256，取前 16 字节，每个半字节映射成 `a`–`p`。而 `chrome.storage.local`
+是按扩展 ID 隔离的 —— 同一份代码放在两个目录里，就是两个互不相干的扩展。
+
+后果都落在使用者身上，而且**不报错**：
+
+- 按 README 装好，某天把文件夹从 `Downloads\LaterOn-1.73.0` 挪到 `D:\Extensions\LaterOn` →
+  打开侧栏是空的，看起来像「数据丢了」。数据其实还在旧 ID 底下，但没有任何入口能读回来。
+- 换机器时在新电脑上解压到别的路径 → 备份文件不导入就什么也没有。
+- 我们自己在做 e2e 时也踩到：每个临时 profile 目录不同，ID 就不同，只能靠 profile 隔离，
+  没法用「同一份 profile 换目录」去验证数据迁移。
+
+这不是 Chrome 的 bug，是设计如此；但对我们「发 ZIP + 开发者模式安装」的分发方式来说，
+这个代价没有一个用户能自己解决。
+
+### 改法
+
+1. 生成 RSA-2048 密钥对，把公钥 DER 的 base64 写进 `manifest.json` 顶层的 `key`。
+   浏览器此后用公钥算 ID，与目录无关。
+2. 私钥 `extension-key.pem` 只留在本机，写进 `.gitignore`。它只在要签 `.crx`、上 Chrome
+   商店时才用得上；`manifest.key`（公钥）才是让 ID 固定的东西，公开无妨。
+3. 新增 `scripts/extension-id.js`：`--generate` 生成密钥对并打印要粘贴的那一行；
+   不带参数时报当前 ID，并核对本机私钥与 manifest 公钥是否配对（防止拿错私钥去签名）。
+4. ID 钉成常量 `ahfghclmnedaflabdpffhdbbdhjikjme`，在单测和 e2e 里都硬编码。
+
+### 动到的文件
+
+| 文件 | 改动 |
+|---|---|
+| `manifest.json` | 新增 `key` 字段（392 字符 base64） |
+| `scripts/extension-id.js` | 新增：ID 计算、密钥生成、公钥/私钥一致性核对 |
+| `tests/extension-id.test.js` | 新增：算法向量、manifest 合法性、ID 常量、私钥排除 |
+| `tests/e2e/extension-smoke.spec.js` | 断言浏览器实际分配的 ID == 常量 == 由 key 推出；解压发布包到另一目录后 ID 不变、收藏还在 |
+| `tests/e2e/helpers.js` | `launchExtension` 支持 `extensionPath`（加载别的目录）与 `profileDir` + `close({keepProfile})`（两次启动共用一份 profile） |
+| `tests/release-package-hygiene.test.js` | 解压真实发布包，核对包内 manifest 保留 key、ID 一致、且不含 `.pem` |
+| `.gitignore` | 排除 `extension-key.pem` / `*.pem` |
+
+### 验证
+
+**反向实验**（先确认测试真的能抓到这个问题）。临时从 manifest 里删掉 `key`，跑同一个 spec：
+
+| 状态 | 开发目录 ID | 发布包解压到另一目录 | 收藏 |
+|---|---|---|---|
+| 有 `key` | `ahfghclmnedaflabdpffhdbbdhjikjme` | 同一个 ID | 读得到 |
+| 删掉 `key` | `mefafiafkjniohmmolmifkedccapmfmp` | `fienldbkjdegnikginbeebhkckdancdh` | 读不到 |
+
+删 `key` 时恰好 5 条断言报红，全部是「固定 ID」相关的那几条，其余 20 条不受影响；
+恢复后 25/25 通过。单测那边也做了同样的反向实验：改坏 `key` 报 3 项，恢复后 10/10。
+
+**ID 算法交叉验证**：同一份公钥用两条互不相干的路径算，结果必须一致 ——
+
+- `node scripts/extension-id.js`：SHA-256 → 取前 16 字节 → 半字节映射
+- `openssl pkey -in extension-key.pem -pubout -outform DER | openssl dgst -sha256 -r | cut -c1-32 | tr '0123456789abcdef' 'abcdefghijklmnop'`
+
+两条都得 `ahfghclmnedaflabdpffhdbbdhjikjme`。单测里的算法向量同样刻意硬编码字面量
+（sha256 空输入 → `odlameecjipmbmbejkplpemijjgpljce`），而不是拿被测函数现算 ——
+否则就是拿自己的输出证明自己。
+
+**全量**：单测 71/71（52s），e2e 4/4（75s）。
+
+### 踩坑
+
+1. **算法向量不能自证**。第一版用 `EMPTY_SHA256_PREFIX.replace(...)` 现算期望值，
+   和被测函数用的是同一个映射，永远相等。改成硬编码后又发现手算错了 8 处
+   （映射是 `0→a`…`f→p`，我按 `0→a`…`9→j` 之外又错位算了一遍），最后用 `tr` 核对的。
+2. **`python -c "print(json.dumps(字符串))"` 再 `JSON.parse` 得到的是字符串，不是对象**。
+   读 zip 里的 manifest 时踩到：`packedManifest.key` 恒为 `undefined`，报错还指向别处。
+   改成 `sys.stdout.write(...)` 直接吐原文。
+3. **测试断言别让一个异常带走整组**。`idFromManifestKey` 在 key 缺失时抛错，
+   第一版直接让整个 spec 异常中止，只看到一行「异常中止」，看不出是哪几项。
+   改成接住异常、转成一条失败项，反证时才看得到完整的 5 条红。
+4. **迁移顺序不能反**。加 key 之后老用户的 ID 会变，旧数据仍留在旧 ID 下但读不出来。
+   必须「先导出 JSON → 再重新加载 → 再导入」，写反了就只能去 profile 的
+   `Local Extension Settings/<旧 ID>/` 手动捞 leveldb。这一点只能靠文档提前说清。
 
 ---
 

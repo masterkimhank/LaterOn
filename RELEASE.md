@@ -111,7 +111,7 @@ https://github.com/masterkimhank/LaterOn/releases/download/<tag>/LaterOn-<版本
 
 1. 下载 zip 解压到任意固定目录
 2. `chrome://extensions/` → 开「开发者模式」→「加载已解压的扩展程序」→ 选该目录
-3. 提醒对方：**扩展 ID 由文件夹路径派生，换目录会变成新 ID、读不到旧数据**，跨目录迁移要「设置 → 导出 JSON」
+3. 扩展 ID 由包内 `manifest.key` 固定（`ahfghclmnedaflabdpffhdbbdhjikjme`），解压到哪都是同一个扩展，数据不会因为换目录读不到；只有从 **1.73.0 及更早**升级上来的人需要「先导出 JSON → 再换新版 → 再导入」
 
 ## 五、要不要发到 Chrome Web Store
 
@@ -123,7 +123,7 @@ https://github.com/masterkimhank/LaterOn/releases/download/<tag>/LaterOn-<版本
 | 审核 | 首次通常 1~3 个工作日，涉及 `<all_urls>` 这类宽权限会被问用途，需写隐私说明 |
 | 名称 | 不能和上游 LaterOn 撞名，需改名，并说明「基于 LaterOn 修改」（MIT 允许，但不得暗示原作者背书） |
 | 更新 | 每次都要重新过审，不能像 GitHub 那样发完即装 |
-| 数据 | 商店版和自己的解压版是**不同扩展 ID**，数据不互通 |
+| 数据 | 商店版和自己的解压版是**不同扩展 ID**，数据不互通（商店会用自己的开发者密钥签名，覆盖 `manifest.key` 算出的 ID） |
 
 如果只是自己和朋友用，GitHub Release 的 zip 就够了，不必进场。
 
@@ -135,6 +135,7 @@ https://github.com/masterkimhank/LaterOn/releases/download/<tag>/LaterOn-<版本
 | `CHANGELOG「## x.y.z」这段太短` | 只写了一行标题 | 补上「改了什么 / 影响谁」 |
 | `有未提交的改动，先提交再发版` | `git status` 不干净 | 提交（或 stash）后再 `--publish` |
 | `测试没全绿，不发版` | 有测试挂了 | 修好再发；`--skip-test` 只用于纯文档改动 |
+| `manifest.json 的 key 有问题，不敢发` | 发布包缺 `manifest.key` | 别硬发。缺了它，每个用户装出来的扩展 ID 会随文件夹路径变化，收藏全部读不到。先 `node scripts/extension-id.js` 确认，再用 `--generate` 补一把 |
 | `Release build failed: Manifest references files outside the release allowlist` | manifest 引用了新文件但没进白名单 | 加进 `RUNTIME_FILES` |
 | `推送失败：... handshake failure` | 代理节点抖动 | 脚本会自动重试 3 次；仍失败就手动 `git push` |
 | `gh 没登录` | token 过期 | `gh auth login` |
