@@ -1,5 +1,11 @@
 importScripts("url-utils.js", "reading-position-background.js", "webdav-sync-core.js", "webdav-directory.js", "webdav-sync.js");
 const normalizeUrl = LaterOnUrl.normalize;
+// url-utils.js 和 background.js 一起打包，这三个函数一定在。这里给出一份保底，
+// 是为了让「只注入了 normalize 的测试桩」退化成「只按网址去重」（与旧行为一致），
+// 而不是把收藏流程整个打断。
+const siteKey = LaterOnUrl.siteKey || (() => "");
+const titleKey = LaterOnUrl.titleKey || ((value) => String(value || ""));
+const pathsAlike = LaterOnUrl.pathsAlike || (() => false);
 
 const STORAGE_KEY = "laterOnItems";
 const PROJECTS_KEY = "laterOnProjects";
@@ -517,8 +523,7 @@ async function quickSave(tab, source = "shortcut") {
   // 只在当前网页里弹出选项目浮层，用户选好之后再真正开始收藏。
   if (await shouldAskFolderForSingle()) {
     const storedItems = (await chrome.storage.local.get(STORAGE_KEY))[STORAGE_KEY] || [];
-    const knownUrls = new Set(storedItems.map((entry) => normalizeUrl(entry.url)));
-    const savedCount = knownUrls.has(normalizeUrl(tab.url || "")) ? 1 : 0;
+    const savedCount = countAlreadySaved(storedItems, [tab]);
     await recordDiag({
       lastTrigger: source,
       lastStage: "等待选择项目",
@@ -885,14 +890,59 @@ async function resolveProject(projectId) {
   return matched ? { id: matched.id, name: matched.name } : { id: null, name: "等待整理" };
 }
 
+// 一条收藏「能拿来认人」的标题。
+// 用户改过标题以后 title 已经不是当初那个了，但 titleAtSave 那份快照还在，
+// 两个都算数——否则「改完标题再从手机版收藏一次」就会多出一条重复。
+function articleTitles(record) {
+  const source = record?.source;
+  return [record?.title, record?.titleAtSave]
+    .filter((title) => isSolidTitle(title, source) && !looksGoneTitle(title))
+    // 太短的标题（「关于」「更新」）当认人凭证不靠谱，宁可多存一条。
+    .filter((title) => titleKey(title).length >= 4);
+}
+
+// 这次要收藏的网页，是不是列表里已经有的那条？返回下标，没有再返回 -1。
+//
+// 第一道是网址（normalize 之后相等）——覆盖参数顺序、跟踪参数、尾斜杠、hash、
+// YouTube 视频 ID 这些「同一个网址的不同写法」。
+// 第二道是「同一个站点 + 同一个标题 + 路径像同一个栏目」——覆盖那些真的换了网址的：
+// 微信公众号的 /s/AbCdEf 与 /s?__biz=...、小红书的 explore 与 discovery、
+// 手机版与桌面版。三道条件缺一不可，宁可漏判（多一条重复，用户能删）
+// 也不误判（把两篇不同的文章合成一条，用户改不回来）。
+function findSameArticleIndex(items, candidate) {
+  if (!candidate?.url) return -1;
+  const targetUrl = normalizeUrl(candidate.url);
+  const byUrl = items.findIndex((entry) => normalizeUrl(entry.url) === targetUrl);
+  if (byUrl >= 0) return byUrl;
+  const site = siteKey(candidate.url);
+  if (!site) return -1;
+  const incoming = articleTitles(candidate);
+  if (!incoming.length) return -1;
+  const keys = new Set(incoming.map(titleKey));
+  return items.findIndex((entry) =>
+    siteKey(entry.url) === site &&
+    pathsAlike(entry.url, candidate.url) &&
+    articleTitles(entry).some((title) => keys.has(titleKey(title)))
+  );
+}
+
+// 这一批标签页里，有多少个是已经收藏过的（同一篇只算一个）。
+function countAlreadySaved(items, tabs) {
+  const hit = new Set();
+  for (const tab of tabs) {
+    const index = findSameArticleIndex(items, { url: tab?.url, title: tab?.title });
+    if (index >= 0) hit.add(index);
+  }
+  return hit.size;
+}
+
 async function saveItem(item, options = {}) {
   const saved = await queueItemWrite(async () => {
     const result = await chrome.storage.local.get(STORAGE_KEY);
     const items = result[STORAGE_KEY] || [];
-    const normalizedUrl = normalizeUrl(item.url);
-    const index = items.findIndex((entry) => normalizeUrl(entry.url) === normalizedUrl);
+    const index = findSameArticleIndex(items, item);
 
-    // 已存在相同网址：视为重复收藏——不新建、不挪动顺序；
+    // 已存在同一篇：视为重复收藏——不新建、不挪动顺序；
     // 但会把「缺的 / 明显过期的」信息补上（YouTube 一律刷新，见 mergeDuplicateMetadata）。
     if (index >= 0) {
       const existing = items[index];
@@ -975,12 +1025,10 @@ async function saveAllTabsInWindow(source = "shortcut") {
 
     // 这一批里有多少个网页已经收藏过？
     // 用来在浮层里提前说清楚：「已收藏的会被一起搬过来」，免得用户以为重复的会被跳过、
-    // 回头还得手动整理一遍。（按网址去重后统计，同一篇在多个标签页里只算一个。）
+    // 回头还得手动整理一遍。（同一篇在多个标签页里只算一个：先按「同一篇文章」
+    // 认出是哪条收藏，再按收藏 id 去重。）
     const storedItems = (await chrome.storage.local.get(STORAGE_KEY))[STORAGE_KEY] || [];
-    const knownUrls = new Set(storedItems.map((entry) => normalizeUrl(entry.url)));
-    const batchUrls = new Set(targets.map((tab) => normalizeUrl(tab.url)));
-    let savedCount = 0;
-    for (const url of batchUrls) if (knownUrls.has(url)) savedCount += 1;
+    const savedCount = countAlreadySaved(storedItems, targets);
 
     // 用户关掉了「先选项目」：直接用上次用过的项目开始。
     if (settings.askFolderOnBatch === false) {
@@ -1144,8 +1192,7 @@ async function runBatchSave({ tabs, source = "shortcut", notifyTabId = null, pro
       const saved = await queueItemWrite(async () => {
         const stored = await chrome.storage.local.get(STORAGE_KEY);
         const items = stored[STORAGE_KEY] || [];
-        const key = normalizeUrl(meta.url);
-        const existing = items.find((entry) => normalizeUrl(entry.url) === key);
+        const existing = items[findSameArticleIndex(items, { url: meta.url, title: meta.title })];
         if (existing) {
           const beforeTitle = existing.title;
           const refreshed = mergeDuplicateMetadata(existing, meta);

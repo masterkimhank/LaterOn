@@ -23,6 +23,7 @@
 | — | 2026-10-29 | 新功能 | 侧栏补上搜索范围开关（全部 / 等待整理） | `sidepanel.html` `sidepanel.css` `sidepanel.js` `i18n.js` | `sidepanel-search-scope.test.js`（18 项）、e2e 追加 7 项 |
 | — | 2026-10-29 | 新功能 | 侧栏补上「关闭已打开」（收藏不删） | `sidepanel.html` `sidepanel.css` `sidepanel.js` | `sidepanel-close-tabs.test.js`（24 项）、e2e 新 spec（21 项） |
 | — | 2026-10-29 | 性能优化 | 收藏库卡片分页：首屏一页 + 滚到底续画 | `library.js` `library.html` `library.css` `i18n.js` | `library-load-more.test.js`（30 项）、e2e 新 spec（12 项）、`card-order.test.js` 追加 7 项 |
+| — | 2026-10-29 | 修复 | 同一篇文章的另一种网址被当成新条目（同站点 + 同标题 + 路径相近） | `url-utils.js` `background.js` | `article-identity.test.js`（9 组） |
 
 ---
 
@@ -726,9 +727,67 @@ git config http.sslBackend openssl
 
 ---
 
+## 未发布 — 同一篇文章认人（2026-10-29）
+
+**来源**：待办里躺着一条「同站点同标题去重——现在只按 URL 去重，需要具体站点复现才能定规则」。
+
+**根因**：`saveItem()` 一直用 `normalizeUrl(entry.url) === normalizeUrl(item.url)` 找重复。
+而 `normalize` 只处理「同一个网址的不同写法」（参数顺序、utm 类跟踪参数、尾斜杠、hash、
+YouTube 视频 ID），对「同一篇内容挂着两个结构上完全不同的网址」无能为力：
+
+| 站点 | 形式 A | 形式 B |
+|---|---|---|
+| 微信公众号 | `/s/AbCdEfGhIjKl` | `/s?__biz=MzA5&mid=265&idx=1&sn=abc` |
+| 小红书 | `/explore/65f0a1b2...` | `/discovery/item/65f0a1b2...?xsec_token=` |
+| 手机版 | `m.example.com/post/x` | `example.com/post/x` |
+
+这几类的表现都是「收藏一次没反应（其实新建了）、再收藏一次又多一条重复」。
+待办里写的「标题消失」是同一个现象的另一面：重复条目把原来那条挤到了后面。
+
+**改法**：
+
+1. `url-utils.js` 加三个原子函数：`siteKey()`（host 去掉 www/m/mobile/amp）、
+   `titleKey()`（去零宽字符、空白折叠、小写）、`pathsAlike()`（首段相同，或存在共同的
+   ≥ 8 字符路径段）。刻意不做「剥掉标题里的站点后缀」——同一个站点的后缀本来就一样，
+   剥掉只会多出误判的机会。
+2. `background.js` 加 `findSameArticleIndex()`：先按网址（行为完全不变），再按「同站点 +
+   同标题 + 路径相近」。三个条件都在才算重复，少一个就当两篇。
+3. `articleTitles()`：一条收藏可用的「认人标题」集合 = `title` 与 `titleAtSave` 里
+   通过 `isSolidTitle`、不是 `looksGoneTitle`、`titleKey` 长度 ≥ 4 的那些。
+   用两个而不是一个：用户改过标题后 `title` 已经不是当初那个了，但 `titleAtSave` 那份快照还在。
+4. 四处调用点统一：`saveItem()`、`runBatchSave()` 的单条查重、两处「这一批里有几个已经收藏过」
+   的统计（新增 `countAlreadySaved()`，按命中的条目下标去重，比原来按网址去重更准）。
+
+**踩到的坑**
+
+1. **三个老测试自带简化的 `LaterOnUrl` 桩**（只有 `normalize`）。刚接上 `siteKey` 就报
+   `LaterOnUrl.siteKey is not a function`。没去改那三个桩（它们模拟的就是老环境），而是在
+   `background.js` 顶部给三个函数加了「退化为只按网址去重」的兜底：缺失时不报错、
+   也不把收藏流程打断。新功能由 `article-identity.test.js`（加载真实 `url-utils.js`）盯着。
+2. **路径相似不能只看首段**。微信的 `/s/AbCd` 与 `/s` 首段相同，小红书的
+   `explore/<id>` 与 `discovery/item/<id>` 首段不同。只写首段会漏掉后者，只写「有共同段」
+   会让 `/a/item/b` 与 `/c/item/b` 也算相似。所以是「首段相同 **或** 有共同的 ≥ 8 字符路径段」。
+3. **标题太短不能当认人凭证**。「关于」「更新」这类两三个字的标题在同一个栏目里撞上的
+   概率不低，所以 `titleKey` 长度不足 4 的直接不参与。
+4. **测试文件被写空**。改测试结构时用 `io.open(p, 'w', newline='\n')`——`open(..., 'w')`
+   先截断、随后 `newline` 校验抛 `ValueError`，文件就变成 0 字节了。写文件要么先校验参数，
+   要么用 `newline=''` 自己管换行。
+
+**文件**：`url-utils.js`（三个原子函数）、`background.js`（`articleTitles` / `findSameArticleIndex` /
+`countAlreadySaved` + 四处调用点）、`tests/article-identity.test.js`（新增）。
+
+**验证**
+
+- `node scripts/test-all.js` → 75/75 文件通过，54 秒。
+- `node tests/article-identity.test.js` → 9 组场景全过（微信 / 小红书 / 手机版 / 不同标题 /
+  跨栏目 / 改过标题 / 网址兜底标题 / 失效标题 / 重复时补摘要）。
+- 反证：把 `findSameArticleIndex` 的第二道判断改成 `if (true) return -1;`，
+  同一份测试立刻 5 组失败（微信、小红书、手机版、改过标题、补摘要）。
+
+---
+
 ## 待办（已提出、尚未实施）
 
 | 项 | 说明 |
 |---|---|
 | P1：列表 / 详情分离 + 单条写单条 | `laterOnItems` 只留索引字段，摘要与封面按 id 分键；单键 345KB → ~80KB。需写数据迁移与老导出文件兼容 |
-| 同站点同标题去重 | 若「标题消失」实为重新打开后 Alt+1 生成重复条目，可加去重（需具体站点复现） |
