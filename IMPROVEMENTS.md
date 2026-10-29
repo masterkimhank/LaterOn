@@ -26,6 +26,89 @@
 | — | 2026-10-29 | 修复 | 同一篇文章的另一种网址被当成新条目（同站点 + 同标题 + 路径相近） | `url-utils.js` `background.js` | `article-identity.test.js`（9 组） |
 | — | 2026-10-29 | 性能优化 | 收藏数据分两处存（索引 + 详情表），写一条不再重写整表 | `item-store.js` `background.js` `library.js` `sidepanel.js` `settings.js` `webdav-sync.js` | `item-store.test.js`（36 项） |
 | 1.74.0 | 2026-10-30 | 发版 | 把 2026-10-29 那批改动合成一版发出去（e2e 基建 / 固定 ID / 侧栏两项 / 分页 / 认人 / 拆分）+ 发版前自查修掉 6 处 | `manifest.json` `scripts/build-release.py` `background.js` `library.js` `sidepanel.js` `tests/*` | `details-safety.test.js`（9 项）、白名单静态校验（2 项） |
+| — | 2026-10-30 | 新功能 | 添加网页时的进度提示（两个界面 + 图标绿点） | `background.js` `library.html` `library.css` `library.js` `sidepanel.html` `sidepanel.css` `sidepanel.js` `i18n.js` | `save-progress.test.js`（56 项） |
+
+---
+
+## 未发布 — 添加网页时的进度提示（2026-10-30）
+
+**来源**：使用者反馈「添加网页时只有右上方有提示，没有进度提示，在主界面跟侧边栏加上进度提示，
+可以的话在添加时扩展图标显示绿色小点表示正在工作」。
+
+### 根因
+
+添加一篇要抓标题 / 摘要 / 封面，`EXTRACT_TIMEOUT_MS` 给到 3 秒；「一键收藏所有标签页」是
+逐篇串行（见 `runBatchSave` 的注释，串行是有意的：并发会互相抢资源、封面抓不全），
+十几篇就是几十秒。这段时间**唯一的反馈**是 `showPagePills()` 注射到网页右上角的药丸，
+它有三个盲区：
+
+- 用户正盯着收藏库或侧栏时，药丸在另一个标签页上，等于没有；
+- 药丸一篇一条，是**结果**不是**进度**，批量时只能靠数冒了几条来估；
+- 失败时药丸一闪而过，人回头看时已经没了。
+
+侧栏的「添加」按钮当时只是 `disabled`（`#saveCurrent:disabled{opacity:.35}`），
+加上浏览器默认的禁用观感，看起来更像「点坏了」而不是「正在干活」。
+
+### 改法
+
+**一条广播，两个界面自己画。** 后台不认识 DOM，只广播「阶段 + 第几篇 + 共几篇 + 标题」：
+
+- `beginSaveProgress(total, label)` → `updateSaveProgress(id, patch)` → `finishSaveProgress(id, result)`，
+  状态机只有 `extract → save → done` 三档；`done` 里带 `result`（`ok / added / duplicated / title`）。
+- 广播走 `chrome.runtime.sendMessage({type:"SAVE_PROGRESS"})`，**没有页面在听时它会 reject**
+  （"Receiving end does not exist"），必须 `catch` 掉——进度是锦上添花，不能因为没人听就影响收藏。
+- 另加 `GET_SAVE_PROGRESS`：侧栏是点图标才拉起来的，很可能收藏已经在跑，页面起步时先补一次票。
+
+**批次号防串台。** 一次添加 = 一个自增 `id`。界面只认 `id` 不小于「收到过的最大值」的消息：
+两次收藏前后脚结束时，旧那次的收尾不能把新的进度条关掉、也不能再弹一次结果。
+注意判据是「收到过的最大值」而不是「当前 state 的 id」——`done` 之后 state 就清空了，
+拿它比较等于没有护栏（第一版就是这么写的，测试没发现，自检时看出来）。
+
+**什么时候开始计时。** `quickSave` 里 `beginSaveProgress` 放在「选项目浮层」**之后**：
+用户可能盯着浮层犹豫半分钟，那段时间进度条一直转着，比没有更让人困惑。
+`runBatchSave` 同理，放在逐篇循环之前而不是函数入口。
+
+**图标绿点。** `applyWorkingIcon(true)` 用 `OffscreenCanvas` 把 `icon32.png` 画一遍，
+在右下角盖一个白边绿点（白边是必要的：图标深浅不定，纯绿点压在深色图标上会糊），
+`getImageData()` 交给 `chrome.action.setIcon({imageData})`——运行时合成，不新增图片文件。
+结束时 `setIcon({path: DEFAULT_ACTION_ICON})` 恢复原图。
+
+**串行队列（踩过的坑）。** `begin` 里是 `void setWorkingIcon(true)`（不 await，别拖慢收藏），
+`finish` 里要 `await setWorkingIcon(false)`。两次调用并行跑的话，收尾可能先落地、
+绿点再被画上去，图标就一直绿着了。所以 `setWorkingIcon` 内部挂了一条 promise 链串行执行。
+
+### 动到的文件
+
+| 文件 | 改了什么 |
+|---|---|
+| `background.js` | 进度状态机 + 广播 + `GET_SAVE_PROGRESS`；绿点图标合成与串行队列；`quickSave` 包 try/finally（失败也要收尾）、`runBatchSave` 每篇推一次 done |
+| `sidepanel.html/.css/.js` | 一行状态（转圈 + 文字 + 秒表）、按钮 `is-working` 转圈态；收到 `done` 停 2.6 秒自己收起 |
+| `library.html/.css/.js` | 顶部 2px 进度条 + 右下角胶囊；`done` 换成页面自己的 toast |
+| `i18n.js` | 10 条中英文案（单篇 / 多篇分开写：多篇带 `3/12`，单篇带上反而像出错） |
+| `tests/background-modules.test.js` | 体积预算 102000 → 110000（这次 +7.2KB，比前几次都肥） |
+| `tests/save-progress.test.js` | 新增，56 项 |
+
+### 验证与反证
+
+- 单元测试 78/78（新增 `save-progress.test.js`），端到端 6/6 spec。
+- 反证三次，都确认断言会真红：
+  1. 去掉 `finishSaveProgress` 里的 `broadcastSaveProgress` → 后台 4 条红（「最后一条是收尾 done」「收尾带了结果」「抛错也要广播收尾」「收尾里写明失败」）；
+  2. 删掉 `sidepanel.css` 的 `.save-progress[hidden]{display:none}` → 1 条红；
+  3. 把侧栏的 `total === 1` 放宽成 `total >= 1` → 「整窗收藏时添加按钮不跟着转圈」红。
+- **真浏览器截图时抓到一个 jsdom 抓不到的问题**：`.save-progress` 一开始写成
+  `inset: 0 0 auto`（高度只有那条 2px），而胶囊是它的绝对定位子元素（`bottom:82px`）——
+  参照系只有 2px 高，胶囊被推到屏幕上方，整块看不见。改成 `inset: 0` 铺满视口
+  （配 `pointer-events:none`，不影响点击），并加了一条静态 CSS 断言钉住这件事。
+- 同一次截图还改了两处观感：进度条渐变原来掺了绿色（这套界面里绿 = 已完成，不能拿来表示
+  「正在跑」），改成深浅橙来回扫；计数文案后面多个「…」再接标题很别扭，多篇版本去掉了它。
+
+### 考虑过但没做的
+
+- **不做 `chrome.storage.session` 镜像进度**：能解决「页面晚于收藏打开」时的接不上，
+  但 `GET_SAVE_PROGRESS` 已经覆盖了这个场景，多一份状态就多一处不一致的可能。
+- **不把进度抽成共享模块**：两个页面要画的结构不一样（一行文字 vs 进度条 + 胶囊），
+  真正共享的只有文案拼接那十几行。抽成新文件反而要再动一次打包白名单——
+  而白名单漏文件正是 1.74.0 刚踩过的坑。
 
 ---
 

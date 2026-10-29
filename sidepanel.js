@@ -689,6 +689,139 @@ function syncCurrentTabItem(url, { followProject = true } = {}) {
   window.scrollTo({ top: 0, behavior: "auto" });
 }
 
+// ── 添加进度 ─────────────────────────────────────────────────
+// 后台在抓取 / 保存时会广播 SAVE_PROGRESS（见 background.js 的 beginSaveProgress）。
+// 抓一篇最长等 3 秒，整窗收藏十几篇就是几十秒；这段时间界面一动不动的话，
+// 人会以为没点上、再点一次，然后收到「这个网页已经添加过了」。
+// 全屏收藏库里是同一套逻辑（那边画顶部进度条 + 右上角小胶囊），改的时候两边一起改。
+const saveProgressEl = document.querySelector("#saveProgress");
+const saveProgressText = document.querySelector("#saveProgressText");
+const saveProgressTime = document.querySelector("#saveProgressTime");
+let progressState = null;
+let progressTicker = null;
+let progressHideTimer = null;
+// 收到过的最大批次号：即使这一批已经收尾（state 清空），更早那一批的迟到消息也不能再顶上来。
+let progressLastId = 0;
+
+// 侧栏只有 320px 宽，标题得先压短：否则「正在保存 3/12 · 很长很长很长的标题」
+// 会把后面的秒表挤掉，而秒表恰恰是「到底有没有在动」的唯一依据。
+function shortProgressTitle(text) {
+  const clean = String(text || "").replace(/\s+/g, " ").trim();
+  return clean.length > 20 ? `${clean.slice(0, 20)}…` : clean;
+}
+
+function saveProgressLabel(progress) {
+  const total = Math.max(1, Number(progress.total) || 1);
+  const current = Math.min(total, (Number(progress.done) || 0) + 1);
+  if (progress.phase === "save") {
+    return total > 1 ? tr("saveProgressSaveMany", { done: current, total }) : tr("saveProgressSaveOne");
+  }
+  return total > 1 ? tr("saveProgressExtractMany", { done: current, total }) : tr("saveProgressExtractOne");
+}
+
+function saveProgressResultText(total, result) {
+  if (!result || result.ok === false) return tr("saveProgressFailed");
+  const added = Number(result.added) || 0;
+  if (total > 1) {
+    return added > 0 ? tr("saveProgressAddedMany", { n: added }) : tr("saveProgressDuplicateMany", { n: total });
+  }
+  const title = shortProgressTitle(result.title);
+  if (added > 0) return title ? tr("saveProgressAdded", { title }) : tr("saveProgressAddedMany", { n: 1 });
+  return title ? tr("saveProgressDuplicate", { title }) : tr("saveProgressDuplicateMany", { n: 1 });
+}
+
+// 秒表：久等时人心里有底。和首屏那条 boot-tip 一样，每秒重画一次。
+function syncProgressTicker() {
+  clearInterval(progressTicker);
+  progressTicker = null;
+  if (!progressState) { saveProgressTime.textContent = ""; return; }
+  const startedAt = Number(progressState.startedAt) || Date.now();
+  const paint = () => {
+    const elapsed = Date.now() - startedAt;
+    // 兜底：service worker 被浏览器回收时不会有收尾消息，这一行不能一直转下去。
+    if (elapsed > 180000) { hideSaveProgress(); return; }
+    const seconds = Math.floor(elapsed / 1000);
+    saveProgressTime.textContent = seconds >= 1 ? `${seconds}s` : "";
+  };
+  paint();
+  progressTicker = setInterval(paint, 1000);
+}
+
+function hideSaveProgress() {
+  progressState = null;
+  clearInterval(progressTicker);
+  progressTicker = null;
+  saveProgressEl.hidden = true;
+  saveProgressEl.classList.remove("is-done");
+  saveButton.classList.remove("is-working");
+  // 按钮文字回到「这一篇的真实状态」：已收藏就是「已添加」，否则就是「添加」。
+  syncSaveButtonState(!!currentItemId);
+}
+
+function renderSaveProgress(progress) {
+  if (!progress) { hideSaveProgress(); return; }
+  // 只认最新那一批：两次收藏前后脚结束时，旧的那次收尾不能把新的进度关掉。
+  const id = Number(progress.id) || 0;
+  if (id < progressLastId) return;
+  progressLastId = id;
+
+  clearTimeout(progressHideTimer);
+  saveProgressEl.hidden = false;
+  const total = Math.max(1, Number(progress.total) || 1);
+
+  if (progress.phase === "done") {
+    progressState = null;
+    clearInterval(progressTicker);
+    progressTicker = null;
+    saveProgressEl.classList.add("is-done");
+    saveButton.classList.remove("is-working");
+    syncSaveButtonState(!!currentItemId);
+    saveProgressText.textContent = saveProgressResultText(total, progress.result);
+    saveProgressTime.textContent = "";
+    // 结果停 2.6 秒再收起（和网页右上角药丸一个节奏）。期间又来了一批的话，
+    // 上面那句 clearTimeout 会把这个定时器取消掉，新进度直接接管。
+    clearTimeout(progressHideTimer);
+    progressHideTimer = setTimeout(() => { if (!progressState) hideSaveProgress(); }, 2600);
+    return;
+  }
+
+  progressState = progress;
+  saveProgressEl.classList.remove("is-done");
+  // 只有「收这一篇」才去动添加按钮：整窗收藏时按钮代表的是当前这个网页，
+  // 它可能根本不在这一批里，跟着转圈会让人以为是在收它。
+  if (total === 1) {
+    saveButton.classList.add("is-working");
+    saveButton.disabled = true;
+    saveButton.querySelector(".save-label").textContent = tr("saving");
+  } else if (saveButton.classList.contains("is-working")) {
+    // 上一篇（单篇）还没收尾就被整窗收藏顶掉了：按钮不能一直转着。
+    saveButton.classList.remove("is-working");
+    syncSaveButtonState(!!currentItemId);
+  }
+  const label = saveProgressLabel(progress);
+  const title = total > 1 ? shortProgressTitle(progress.label) : "";
+  saveProgressText.textContent = title ? `${label} · ${title}` : label;
+  syncProgressTicker();
+}
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (message?.type !== "SAVE_PROGRESS") return;
+  renderSaveProgress(message.progress);
+});
+
+// 侧栏常在「收藏已经跑起来」之后才被打开（快捷键触发，或点图标才拉起侧栏）：
+// 先问一句现在有没有进度，有就接上，别等下一次广播才出现。
+function askSaveProgress() {
+  try {
+    const sent = chrome.runtime.sendMessage({ type: "GET_SAVE_PROGRESS" });
+    if (!sent || typeof sent.then !== "function") return;
+    sent.then((response) => { if (response?.ok && response.progress) renderSaveProgress(response.progress); }).catch(() => {});
+  } catch {
+    // 后台还是老版本 / 测试环境里根本没这条消息：没有进度可接，正常。
+  }
+}
+askSaveProgress();
+
 saveButton.addEventListener("click", async () => {
   if (!currentItem || currentItemId) return;
   saveButton.disabled = true;

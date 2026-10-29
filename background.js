@@ -183,6 +183,122 @@ async function showActionFeedback(text, color, duration) {
 
 resetActionAppearance().catch(() => {});
 
+// ── 添加进度：页面里的进度条 + 图标上的绿点 ──────────────────
+// 添加一篇要抓标题 / 摘要 / 封面，最长等 3 秒；「一键收藏所有标签页」十几篇就是几十秒。
+// 这段时间原来只有网页右上角的药丸在说话，收藏库和侧栏里毫无动静——
+// 用户很容易以为没点上、再按一次，结果收到「已经添加过了」。
+// 这里把进度广播给所有扩展页面（收藏库画顶部进度条、侧栏画一行状态），
+// 工作期间再把工具栏图标右下角点上一颗绿点：切到别的标签页也看得出「它还在跑」。
+//
+// 一次收藏批次对应一个自增的 runId。页面只认 id 最大的那一次：
+// 两次收藏前后脚结束时，旧的那次收尾不会把新的进度条关掉。
+let saveProgressSeq = 0;
+let saveProgressState = null;
+
+function broadcastSaveProgress(progress) {
+  try {
+    const sent = chrome.runtime.sendMessage({ type: "SAVE_PROGRESS", progress });
+    // 没有页面在听时这里会 reject（"Receiving end does not exist"）。
+    // 进度是锦上添花，绝不能因为没人听就影响收藏本身。
+    if (sent && typeof sent.catch === "function") sent.catch(() => {});
+  } catch {
+    // 测试环境里可能根本没有 sendMessage，同样忽略。
+  }
+}
+
+async function beginSaveProgress(total, label = "") {
+  const runId = ++saveProgressSeq;
+  saveProgressState = {
+    id: runId,
+    total: Math.max(1, Number(total) || 1),
+    done: 0,
+    label: String(label || ""),
+    phase: "extract",     // extract（读网页）→ save（写库）→ done（收尾）
+    startedAt: Date.now()
+  };
+  broadcastSaveProgress(saveProgressState);
+  // 不 await：画图标要几十毫秒，别拖慢真正要干的事；
+  // setWorkingIcon 内部有串行队列，先后顺序仍然是对的。
+  void setWorkingIcon(true);
+  return runId;
+}
+
+function updateSaveProgress(runId, patch = {}) {
+  if (!saveProgressState || saveProgressState.id !== runId) return;
+  saveProgressState = { ...saveProgressState, ...patch };
+  broadcastSaveProgress(saveProgressState);
+}
+
+async function finishSaveProgress(runId, result = null) {
+  if (!saveProgressState || saveProgressState.id !== runId) return;
+  const finished = { ...saveProgressState, phase: "done", done: saveProgressState.total, result };
+  saveProgressState = null;
+  broadcastSaveProgress(finished);
+  await setWorkingIcon(false);
+}
+
+// 合成「右下角带绿点」的图标：运行时现画，不新增图片文件。
+// 思路就是把 icon32.png 画到离屏画布上，再在右下角盖一个白边绿点——
+// 白边是必要的：图标本身深浅不定，纯绿点压在深色图标上会糊成一团。
+const WORKING_DOT_COLOR = "#2f9e44";
+const DEFAULT_ACTION_ICON = { 16: "icon16.png", 32: "icon32.png", 48: "icon48.png", 128: "icon128.png" };
+let workingIconData = null;
+let workingIconBuilt = false;
+let workingIconShown = false;
+
+async function buildWorkingIcon() {
+  const size = 32;
+  const response = await fetch(chrome.runtime.getURL("icon32.png"));
+  const bitmap = await createImageBitmap(await response.blob());
+  const canvas = new OffscreenCanvas(size, size);
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(bitmap, 0, 0, size, size);
+
+  const radius = 8.5;
+  const cx = size - radius - 0.5;
+  const cy = size - radius - 0.5;
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.fillStyle = "#ffffff";
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius - 2.6, 0, Math.PI * 2);
+  ctx.fillStyle = WORKING_DOT_COLOR;
+  ctx.fill();
+
+  return ctx.getImageData(0, 0, size, size);
+}
+
+async function applyWorkingIcon(on) {
+  if (on === workingIconShown) return;
+  try {
+    if (!on) {
+      // 恢复 manifest.default_icon 那一套原图。
+      await chrome.action.setIcon({ path: DEFAULT_ACTION_ICON });
+      workingIconShown = false;
+      return;
+    }
+    if (!workingIconBuilt) {
+      workingIconBuilt = true;
+      workingIconData = await buildWorkingIcon().catch(() => null);
+    }
+    // 画不出来（取不到图 / 没有 OffscreenCanvas）就算了：角标那套提示还在。
+    if (!workingIconData) return;
+    await chrome.action.setIcon({ imageData: workingIconData });
+    workingIconShown = true;
+  } catch {
+    // setIcon 失败不影响收藏本身。
+  }
+}
+
+// 串行队列：begin 里是 void 调用，finish 里要 await。
+// 如果两次调用并行跑，收尾可能先落地、绿点再被画上去，图标就一直绿着了。
+let workingIconChain = Promise.resolve();
+function setWorkingIcon(on) {
+  workingIconChain = workingIconChain.then(() => applyWorkingIcon(on)).catch(() => {});
+  return workingIconChain;
+}
+
 // ── 地址栏搜索：输入 `lo` + 空格后直接查 LaterOn ─────────────
 function escapeOmniboxText(value) {
   return String(value || "")
@@ -483,6 +599,13 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 ensureLegacyCleanup().catch(() => {});
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  // 页面刚打开时问一句「现在有没有正在进行的添加」。
+  // 侧栏是点图标才打开的，很可能收藏已经在跑了（快捷键触发），进度条得能接上，
+  // 否则它要等下一次进度广播才出现，看起来像是没反应。
+  if (message.type === "GET_SAVE_PROGRESS") {
+    sendResponse({ ok: true, progress: saveProgressState });
+    return false;
+  }
   if (message.type === "MUTATE_ITEMS") {
     mutateItems(message)
       .then(sendResponse)
@@ -633,36 +756,60 @@ async function quickSave(tab, source = "shortcut") {
 
   // 统一走 extractTabMetadata：它会在抓取前处理抖音「站内切换视频」的滞后问题，
   // 也自带超时兜底（原先直接注入的写法，遇到卡死的页面会一直挂着）。
-  const meta = await extractTabMetadata(tab);
+  //
+  // 从这里开始才真正「在干活」，界面上的进度条也从这里点亮。
+  // 注意别把 begin 放在选项目浮层之前：用户可能盯着浮层犹豫半分钟，
+  // 那段时间进度条一直转着，比没有更让人困惑。
+  const runId = await beginSaveProgress(1, tab.title || tab.url || "");
+  let outcome = { ok: false };
+  try {
+    updateSaveProgress(runId, { phase: "extract", label: tab.title || tab.url || "" });
+    const meta = await extractTabMetadata(tab);
 
-  const fallbackUrl = tab.url || "";
-  const baseItem = {
-    title: meta.title || tab.title || fallbackUrl,
-    // 收藏这一刻浏览器里显示的标题。它可能和 title 不同（服务端兜底、站点改名），
-    // 那份快照会一直在收藏库的卡片上留着，方便回忆当时看的到底是什么。
-    titleAtSave: snapshotTitleOf(meta) || tab.title || "",
-    description: meta.description || "暂无摘要",
-    image: meta.image || "",
-    favicon: meta.favicon || tab.favIconUrl || "",
-    source: meta.source || safeHostname(fallbackUrl),
-    url: meta.url || fallbackUrl
-  };
-  const saved = await saveItem(baseItem);
-  // 记一笔封面来源（设置页的「自检」会显示），万一某个站点抓不到封面就知道卡在哪层。
-  await recordDiag({
-    lastCoverFrom: meta.imageFrom || "none",
-    lastTitleFrom: meta.titleFrom || "none",
-    lastCoverTitle: String(baseItem.title || "").slice(0, 60),
-    lastCoverAt: Date.now()
-  });
-  const message = saved.refreshed
-    ? (en ? `Details updated: ${pillTitle(baseItem.title)}` : `已更新信息：${pillTitle(baseItem.title)}`)
-    : saved.duplicated
-      ? (en ? "This page is already added" : "这个网页已经添加过了")
-      : (en ? `Added: ${pillTitle(baseItem.title)}` : `已添加：${pillTitle(baseItem.title)}`);
-  await showPagePills(tab.id, [message]).catch(() => {});
-  // 把结果回传，好让侧边栏 / 工具栏小窗口的按钮显示正确的字样。
-  return { ok: true, duplicated: !!saved.duplicated, refreshed: !!saved.refreshed, updated: !!saved.updated };
+    const fallbackUrl = tab.url || "";
+    const baseItem = {
+      title: meta.title || tab.title || fallbackUrl,
+      // 收藏这一刻浏览器里显示的标题。它可能和 title 不同（服务端兜底、站点改名），
+      // 那份快照会一直在收藏库的卡片上留着，方便回忆当时看的到底是什么。
+      titleAtSave: snapshotTitleOf(meta) || tab.title || "",
+      description: meta.description || "暂无摘要",
+      image: meta.image || "",
+      favicon: meta.favicon || tab.favIconUrl || "",
+      source: meta.source || safeHostname(fallbackUrl),
+      url: meta.url || fallbackUrl
+    };
+    updateSaveProgress(runId, { phase: "save", label: baseItem.title });
+    const saved = await saveItem(baseItem);
+    // 记一笔封面来源（设置页的「自检」会显示），万一某个站点抓不到封面就知道卡在哪层。
+    await recordDiag({
+      lastCoverFrom: meta.imageFrom || "none",
+      lastTitleFrom: meta.titleFrom || "none",
+      lastCoverTitle: String(baseItem.title || "").slice(0, 60),
+      lastCoverAt: Date.now()
+    });
+    const message = saved.refreshed
+      ? (en ? `Details updated: ${pillTitle(baseItem.title)}` : `已更新信息：${pillTitle(baseItem.title)}`)
+      : saved.duplicated
+        ? (en ? "This page is already added" : "这个网页已经添加过了")
+        : (en ? `Added: ${pillTitle(baseItem.title)}` : `已添加：${pillTitle(baseItem.title)}`);
+    await showPagePills(tab.id, [message]).catch(() => {});
+    outcome = {
+      ok: true,
+      title: pillTitle(baseItem.title),
+      added: saved.duplicated ? 0 : 1,
+      duplicated: !!saved.duplicated,
+      refreshed: !!saved.refreshed
+    };
+    // 把结果回传，好让侧边栏 / 工具栏小窗口的按钮显示正确的字样。
+    return { ok: true, duplicated: !!saved.duplicated, refreshed: !!saved.refreshed, updated: !!saved.updated };
+  } catch (error) {
+    // 异常照旧抛给上层（QUICK_SAVE_TAB 会转成 ok:false），这里只补一份收尾用的结果。
+    outcome = { ok: false, error: String(error?.message || error) };
+    throw error;
+  } finally {
+    // 不管成功还是失败都要收尾：不然进度条会一直挂着、图标一直是绿的。
+    await finishSaveProgress(runId, outcome);
+  }
 }
 
 async function toggleTranslation(tab) {
@@ -1243,6 +1390,8 @@ async function runBatchSave({ tabs, source = "shortcut", notifyTabId = null, pro
   // 只收一篇时（设置里打开了「收藏单篇前先选项目」）提示从简：
   // 跟以前「一键收藏」一样只弹一条结果，不再多出「开始收藏」「全部完成」两条。
   const single = (tabs || []).length === 1;
+  // 界面进度条的这次批次号。放在 try 外面，catch 里才能收尾。
+  let progressId = null;
 
   try {
     const targets = tabs || [];
@@ -1269,8 +1418,15 @@ async function runBatchSave({ tabs, source = "shortcut", notifyTabId = null, pro
     // 收多篇时才播报「开始」；收一篇时静悄悄抓，最后只弹一条结果提示。
     if (!single) await notify(en ? `Adding ${targets.length} tabs → ${folderLabel}` : `开始添加 ${targets.length} 个标签页 → ${folderLabel}`);
 
+    // 界面上的进度从「真正开始逐篇抓取」算起：前面选项目那段时间是用户在思考，
+    // 进度条一直转着只会让人以为卡住了。
+    progressId = await beginSaveProgress(targets.length, targets[0]?.title || "");
+
     for (let i = 0; i < targets.length; i += 1) {
       const tab = targets[i];
+      // 每篇开始抓取前先把「正在处理第几篇」推给界面：整窗收藏十几篇时，
+      // 光靠网页上的药丸看不出还剩多少。
+      updateSaveProgress(progressId, { phase: "extract", done: i, label: tab.title || tab.url || "" });
       await stage({
         lastStage: "逐个添加中",
         lastProgress: `${i + 1}/${targets.length}`,
@@ -1331,6 +1487,9 @@ async function runBatchSave({ tabs, source = "shortcut", notifyTabId = null, pro
         return { record, duplicated: false };
       });
       const { record, refreshed, moved } = saved;
+      // 这一篇已经落库，进度往前挪一格。重复的也算「处理完了」——
+      // 界面上要反映的是「还剩几篇没看完」，不是「新增了几篇」。
+      updateSaveProgress(progressId, { phase: "save", done: i + 1, label: pillTitle(record.title) });
       if (saved.duplicated) {
         duplicated += 1;
         if (isIncomplete(record)) degraded += 1;
@@ -1392,6 +1551,7 @@ async function runBatchSave({ tabs, source = "shortcut", notifyTabId = null, pro
       lastError: "",
       lastResultAt: Date.now()
     });
+    await finishSaveProgress(progressId, { ok: true, added, duplicated, moved: movedCount, enriched, degraded });
     return { ok: true, added, duplicated, moved: movedCount, enriched, degraded };
   } catch (error) {
     // 任何一步抛错都要留下痕迹，避免再次出现「按了没反应、也不知道为什么」。
@@ -1401,6 +1561,7 @@ async function runBatchSave({ tabs, source = "shortcut", notifyTabId = null, pro
       lastErrorAt: Date.now()
     }).catch(() => {});
     await showActionError();
+    await finishSaveProgress(progressId, { ok: false, error: String(error?.message || error) });
     return { ok: false, added: 0, duplicated: 0 };
   }
 }

@@ -217,6 +217,15 @@
       </section>
       <p id="status" role="status"></p>
 
+      <!-- 添加进度：后台在抓取 / 保存时把阶段广播过来（见 background.js 的 beginSaveProgress）。
+           侧栏里空间窄，就一行「转圈 + 文字 + 秒表」，和首屏那条 boot-tip 同一套语言；
+           没在添加时整块 hidden，不占位置。 -->
+      <div id="saveProgress" class="save-progress" role="status" hidden>
+        <span class="save-progress-spinner" aria-hidden="true"></span>
+        <span id="saveProgressText" class="save-progress-text"></span>
+        <span id="saveProgressTime" class="save-progress-time"></span>
+      </div>
+
       <!-- 搜索框自带范围开关：默认「全部」= 全局搜索（在哪个项目里搜都能搜到别处，
            这样人在某个项目里搜一个明明存在的标题不会一无所获）；拨到「等待整理」
            就只在这一堆还没归类的条目里找，结果不会跑出这个范围。

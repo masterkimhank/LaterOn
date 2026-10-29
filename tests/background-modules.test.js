@@ -24,8 +24,10 @@ const backgroundBytes = Buffer.byteLength(background.replace(/\r\n/g, "\n"));
 // 失效页标题的识别与拦截），又加了约 3.9KB。
 // 预算 96000 → 102000：同一篇文章认人（siteKey / titleKey / pathsAlike 三道判断、
 // 四处调用点统一）与「索引 / 详情分开存」的读写改造，加了约 5.1KB。
+// 预算 102000 → 110000：1.75.0 的「添加进度」——进度广播（含 GET_SAVE_PROGRESS 补票）、
+// 串行化的图标绿点合成，又加了约 7.2KB；比前几次都肥，所以留了约 1KB 余量。
 // 仍然守住的底线是：网页内执行的大函数一律不许搬回来（下面三条断言）。
-assert.ok(backgroundBytes < 102000, `background.js 重新膨胀到 ${backgroundBytes} bytes`);
+assert.ok(backgroundBytes < 110000, `background.js 重新膨胀到 ${backgroundBytes} bytes`);
 
 assert.ok(metadata.includes("function extractPageMetadataForShortcut"));
 assert.ok(translation.includes("function togglePageTranslation"));

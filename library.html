@@ -19,6 +19,16 @@
     <script src="onboarding.js" defer></script>
   </head>
   <body>
+    <!-- 添加进度：后台在抓取 / 保存时把阶段广播过来（见 background.js 的 beginSaveProgress）。
+         窗口最顶部一条 2px 进度条 + 右下角小胶囊；没在添加时整块 hidden，也不接收点击。 -->
+    <div id="saveProgress" class="save-progress" role="status" aria-live="polite" hidden>
+      <div class="save-progress-track"><div id="saveProgressFill" class="save-progress-fill"></div></div>
+      <div class="save-progress-chip">
+        <span class="save-progress-spinner" aria-hidden="true"></span>
+        <span id="saveProgressText" class="save-progress-text"></span>
+        <span id="saveProgressTime" class="save-progress-time"></span>
+      </div>
+    </div>
     <div class="shell">
       <header class="topbar">
         <a class="brand" id="homeBrand" href="#" data-i18n-aria-label="home" data-i18n-title="home" aria-label="LaterOn 首页" title="回到首页"><img class="brand-icon" src="icon128.png" width="40" height="40" alt="" />LaterOn</a>

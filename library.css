@@ -555,6 +555,46 @@ footer { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-it
 }
 .toast.pill-toast.show { opacity: 1; transform: translateX(0) scale(1); }
 
+/* 添加进度：窗口最顶部一条 2px 进度条 + 右下角小胶囊（胶囊贴在 toast 上方，两个都在时摞着看）。
+   为什么胶囊不按惯例放右上角：右上角是 Alt+1 那条 pill-toast 的地盘，撞上了两块都看不清。
+   整块 pointer-events:none —— 它只是「看得见」，绝不能挡住下面的按钮和卡片。
+   容器必须铺满整个视口：它是胶囊的定位参照，只有 2px 高的话 bottom:82px 会把胶囊推出屏幕。 */
+.save-progress { position: fixed; inset: 0; z-index: 70; pointer-events: none; }
+/* 自己写了定位和 display 就得自己写 [hidden]：浏览器默认那条压不过类选择器。 */
+.save-progress[hidden] { display: none; }
+.save-progress-track { height: 2px; background: transparent; }
+/* 进度条本身只有 2px，光靠宽度变化在「等一篇文章」这种慢阶段几乎看不出在动，
+   所以叠一层来回扫的高光：停在一个百分比上也显得「它还在跑」。 */
+.save-progress-fill {
+  width: 0; height: 100%;
+  /* 深浅橙来回扫，全用品牌色：绿色在这套界面里是「已完成」的意思，
+     不能拿来当「正在跑」的进度条。 */
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 55%, #fff), var(--accent), color-mix(in srgb, var(--accent) 55%, #fff));
+  background-size: 200% 100%;
+  transition: width .35s ease, opacity .3s ease;
+  animation: lon-progress-sheen 1.3s linear infinite;
+}
+.save-progress.is-done .save-progress-fill { opacity: 0; }
+.save-progress-chip {
+  position: absolute; right: 25px; bottom: 82px;
+  display: flex; align-items: center; gap: 7px;
+  box-sizing: border-box; max-width: min(420px, calc(100vw - 50px));
+  padding: 8px 13px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--card); color: var(--muted);
+  box-shadow: var(--shadow-md); font-size: 11px;
+}
+.save-progress-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.save-progress-time { flex: none; font-variant-numeric: tabular-nums; }
+.save-progress-spinner { flex: none; width: 10px; height: 10px; border: 1.5px solid color-mix(in srgb, var(--accent) 28%, transparent); border-top-color: var(--accent); border-radius: 50%; animation: lon-spin .8s linear infinite; }
+/* 收尾那一下把转圈换成实心绿点：还在转 = 还在干，实心 = 有结果了。 */
+.save-progress.is-done .save-progress-spinner { border: 0; background: #2d7a4f; animation: none; }
+@keyframes lon-progress-sheen { from { background-position: 0 0; } to { background-position: 200% 0; } }
+@keyframes lon-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .save-progress-spinner { animation-duration: 2.4s; }
+  .save-progress-fill { animation: none; }
+}
+
 @media (max-width: 900px) {
   .workspace { grid-template-columns: 208px minmax(0,1fr); }
   .topbar { grid-template-columns: 1fr auto; }

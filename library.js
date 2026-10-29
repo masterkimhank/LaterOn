@@ -192,6 +192,122 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   sendResponse({ shown: true });
 });
 
+// ── 添加进度 ─────────────────────────────────────────────────
+// 后台在抓取 / 保存时广播 SAVE_PROGRESS（见 background.js 的 beginSaveProgress）。
+// 抓一篇最长等 3 秒，整窗收藏十几篇就是几十秒；这段时间全屏界面原来毫无动静，
+// 只有网页右上角会冒药丸——人盯着收藏库，只会觉得「按了没反应」。
+// 侧栏里是同一套逻辑（那边画一行状态），改的时候两边一起改。
+const saveProgressEl = document.querySelector("#saveProgress");
+const saveProgressFill = document.querySelector("#saveProgressFill");
+const saveProgressText = document.querySelector("#saveProgressText");
+const saveProgressTime = document.querySelector("#saveProgressTime");
+let saveProgressState = null;
+let saveProgressTicker = null;
+// 收到过的最大批次号。即使这一批已经收尾（state 清空），更早那一批的迟到消息也不能再弹一遍。
+let saveProgressLastId = 0;
+
+function shortProgressTitle(text) {
+  const clean = String(text || "").replace(/\s+/g, " ").trim();
+  return clean.length > 26 ? `${clean.slice(0, 26)}…` : clean;
+}
+
+function saveProgressLabel(progress) {
+  const total = Math.max(1, Number(progress.total) || 1);
+  const current = Math.min(total, (Number(progress.done) || 0) + 1);
+  if (progress.phase === "save") {
+    return total > 1 ? tr("saveProgressSaveMany", { done: current, total }) : tr("saveProgressSaveOne");
+  }
+  return total > 1 ? tr("saveProgressExtractMany", { done: current, total }) : tr("saveProgressExtractOne");
+}
+
+function saveProgressResultText(total, result) {
+  if (!result || result.ok === false) return tr("saveProgressFailed");
+  const added = Number(result.added) || 0;
+  if (total > 1) {
+    return added > 0 ? tr("saveProgressAddedMany", { n: added }) : tr("saveProgressDuplicateMany", { n: total });
+  }
+  const title = shortProgressTitle(result.title);
+  if (added > 0) return title ? tr("saveProgressAdded", { title }) : tr("saveProgressAddedMany", { n: 1 });
+  return title ? tr("saveProgressDuplicate", { title }) : tr("saveProgressDuplicateMany", { n: 1 });
+}
+
+// 进度条走多少：一整篇里「读网页」算一小段、「写库」算一大段。
+// 不要按 done/total 直接算——单篇收藏时那样会一直停在 0%，看着像没开始。
+function saveProgressPercent(progress) {
+  const total = Math.max(1, Number(progress.total) || 1);
+  const done = Math.min(total, Number(progress.done) || 0);
+  const partial = progress.phase === "save" ? 0.75 : 0.15;
+  return Math.max(4, Math.min(100, Math.round(((done + partial) / total) * 100)));
+}
+
+function syncSaveProgressTicker() {
+  clearInterval(saveProgressTicker);
+  saveProgressTicker = null;
+  if (!saveProgressState) { saveProgressTime.textContent = ""; return; }
+  const startedAt = Number(saveProgressState.startedAt) || Date.now();
+  const paint = () => {
+    const elapsed = Date.now() - startedAt;
+    // 兜底：service worker 被浏览器回收时不会有收尾消息，进度条不能一直挂在上面。
+    if (elapsed > 180000) { hideSaveProgress(); return; }
+    const seconds = Math.floor(elapsed / 1000);
+    saveProgressTime.textContent = seconds >= 1 ? `${seconds}s` : "";
+  };
+  paint();
+  saveProgressTicker = setInterval(paint, 1000);
+}
+
+function hideSaveProgress() {
+  saveProgressState = null;
+  clearInterval(saveProgressTicker);
+  saveProgressTicker = null;
+  saveProgressEl.hidden = true;
+  saveProgressEl.classList.remove("is-done");
+}
+
+function renderSaveProgress(progress) {
+  if (!progress) { hideSaveProgress(); return; }
+  const id = Number(progress.id) || 0;
+  if (id < saveProgressLastId) return;   // 更早那一批的迟到消息，忽略
+  saveProgressLastId = id;
+
+  saveProgressEl.hidden = false;
+  const total = Math.max(1, Number(progress.total) || 1);
+
+  if (progress.phase === "done") {
+    const text = saveProgressResultText(total, progress.result);
+    // 结果交给页面自己的 toast（和「已移动到…」那些一致），比一个小胶囊好认得多。
+    hideSaveProgress();
+    showToast(text, 2600);
+    return;
+  }
+
+  saveProgressState = progress;
+  saveProgressEl.classList.remove("is-done");
+  saveProgressFill.style.width = `${saveProgressPercent(progress)}%`;
+  const label = saveProgressLabel(progress);
+  const title = total > 1 ? shortProgressTitle(progress.label) : "";
+  saveProgressText.textContent = title ? `${label} · ${title}` : label;
+  syncSaveProgressTicker();
+}
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (message?.type !== "SAVE_PROGRESS") return;
+  renderSaveProgress(message.progress);
+});
+
+// 收藏库可能是「收藏已经跑起来」之后才打开的（快捷键和网页药丸都不等人）：
+// 先问一句现在有没有进度，有就接上，别等下一次广播才出现。
+function askSaveProgress() {
+  try {
+    const sent = chrome.runtime.sendMessage({ type: "GET_SAVE_PROGRESS" });
+    if (!sent || typeof sent.then !== "function") return;
+    sent.then((response) => { if (response?.ok && response.progress) renderSaveProgress(response.progress); }).catch(() => {});
+  } catch {
+    // 后台还是老版本 / 测试环境里根本没这条消息：没有进度可接，正常。
+  }
+}
+askSaveProgress();
+
 init();
 
 function normalizeItems(list) {

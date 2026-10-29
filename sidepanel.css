@@ -26,7 +26,27 @@ main { padding:14px 13px 30px; }
 #saveCurrent.done { background:#2d7a4f; }
 #saveCurrent.saved { border-color:var(--line); background:var(--accent-soft); color:var(--accent); }
 #saveCurrent.saved:disabled { opacity:1; cursor:default; }
+/* 正在添加：把「＋」换成一个转圈，并写上「添加中…」。
+   只把按钮 disabled 掉（opacity .35）看起来跟「点坏了」没区别，而抓一篇最长要等 3 秒。 */
+#saveCurrent.is-working { opacity:1; gap:5px; }
+#saveCurrent.is-working > span:first-child { display:none; }
+#saveCurrent.is-working::before { content:""; flex:none; width:9px; height:9px; border:1.6px solid color-mix(in srgb, currentColor 32%, transparent); border-top-color:currentColor; border-radius:50%; animation:lon-spin .8s linear infinite; }
 #status { min-height:13px; margin:5px 3px 2px; color:var(--accent); font-size:10px; }
+/* 添加进度：一行「转圈 + 文字 + 秒表」。字号和 #status 一致（都是 10px），
+   侧栏里不要再冒出第三种小字号。秒数用等宽数字，跳动时那一行不会左右抖。 */
+.save-progress { display:flex; align-items:center; gap:6px; margin:2px 3px 0; color:var(--muted); font-size:10px; }
+.save-progress[hidden] { display:none; }
+/* 自己写了 display:flex，就必须自己写 [hidden]。浏览器默认的 [hidden]{display:none}
+   优先级低于类选择器，光靠 hidden 属性藏不住（侧栏 .close-tabs 踩过同一个坑）。 */
+.save-progress-text { overflow:hidden; min-width:0; text-overflow:ellipsis; white-space:nowrap; }
+.save-progress-time { flex:none; font-variant-numeric:tabular-nums; }
+.save-progress-spinner { flex:none; width:9px; height:9px; border:1.4px solid color-mix(in srgb, var(--accent) 28%, transparent); border-top-color:var(--accent); border-radius:50%; animation:lon-spin .8s linear infinite; }
+/* 收尾那一下把转圈换成一个实心绿点：还在转 = 还在干，实心 = 有结果了。 */
+.save-progress.is-done .save-progress-spinner { border:0; background:#2d7a4f; animation:none; }
+@keyframes lon-spin { to { transform:rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .save-progress-spinner { animation-duration:2.4s; }
+}
 .search { display:flex; align-items:center; margin-top:8px; padding:9px 10px; border:1px solid var(--line); border-radius:10px; background:var(--field); }
 .search svg { width:15px; flex:none; fill:none; stroke:var(--muted); stroke-linecap:round; stroke-width:1.8; }
 .search input { min-width:0; flex:1 1 auto; border:0; outline:0; padding:0 7px; background:transparent; color:var(--ink); font-size:11px; }
