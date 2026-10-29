@@ -22,6 +22,14 @@ const check = (label, ok, extra = "") => {
 };
 const settle = async (rounds = 30) => { for (let i = 0; i < rounds; i += 1) await new Promise((r) => setTimeout(r, 0)); };
 
+// Core.backupName 用的是「本机日期」，不是 UTC 日期 —— 凌晨 0 点到 8 点（东八区）两者差一天。
+// 用例里拼备份文件名必须按本地日期来，否则「另一台设备」的写入会落到另一个文件名上：
+// 干扰没生效、PUT 不冲突、断言全红。这里曾经因为用 toISOString() 在凌晨必挂。
+const localDay = () => {
+  const d = new Date();
+  return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0")].join("-");
+};
+
 // ── 内存版 WebDAV 服务器 ────────────────────────────────────
 function makeServer() {
   const files = new Map(); // name -> { body, etag }
@@ -159,6 +167,9 @@ const item = (id, patch = {}) => ({
     setTimeout, clearTimeout
   };
   vm.createContext(context);
+  // 传输层要和扩展里一样跑在真实的 item-store 上：索引 / 详情拆开存之后，
+  // 「读出来的是不是完整条目」直接决定合并对不对。
+  vm.runInContext(read("item-store.js"), context);
   vm.runInContext(read("webdav-sync-core.js"), context);
   vm.runInContext(read("webdav-directory.js"), context);
   vm.runInContext(read("webdav-sync.js"), context);
@@ -196,7 +207,7 @@ const item = (id, patch = {}) => ({
     const foreign = JSON.parse(JSON.stringify(server.backup()));
     foreign.items.push(item("remote-only", { title: "另一台设备加的" }));
     foreign.exportedAt = Date.now();
-    server.write(`lateron-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(foreign, null, 2));
+    server.write(`lateron-backup-${localDay()}.json`, JSON.stringify(foreign, null, 2));
   };
   await chrome.storage.local.set({ laterOnItems: [...store.laterOnItems, item("local-c")] });
   await settle();
@@ -220,7 +231,7 @@ const item = (id, patch = {}) => ({
   server.interfere = () => {
     const foreign = JSON.parse(JSON.stringify(server.backup()));
     foreign.exportedAt = Date.now() + 1;
-    server.write(`lateron-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(foreign, null, 2));
+    server.write(`lateron-backup-${localDay()}.json`, JSON.stringify(foreign, null, 2));
   };
   await chrome.storage.local.set({ laterOnItems: [...store.laterOnItems, item("local-d")] });
   await settle();
@@ -247,6 +258,7 @@ const item = (id, patch = {}) => ({
     sync.directoryUrl(sync.configValue({ url: "https://dav.example.com/dav/" })));
   check("已指向 LaterOn/ 的老配置不重复嵌套",
     sync.directoryUrl(sync.configValue({ url: "https://dav.example.com/dav/LaterOn/" })) === "https://dav.example.com/dav/LaterOn/");
+
 
   console.log(`\n${failures === 0 ? "全部通过" : "存在失败"}：${failures === 0 ? "没有失败项" : failures + " 项失败"}`);
   process.exit(failures === 0 ? 0 : 1);

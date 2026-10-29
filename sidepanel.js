@@ -372,7 +372,11 @@ async function init() {
   // 读回来的索引有多大？体积是「读数据慢」最常见的解释——
   // 早期版本把封面 base64 直接塞在条目里，能塞到好几兆。
   // 现在摘要与封面另存，这个数字只代表索引部分。
-  try { seg.bytes = JSON.stringify(loaded.index || []).length; } catch { /* 量不出来就不量 */ }
+  try {
+    // 量「索引 + 详情表」：摘要与封面搬到详情表之后，只量索引会低报一半，
+    // 上面「网页数据异常大」那条提示就再也触发不了。
+    seg.bytes = JSON.stringify(loaded.index || []).length + JSON.stringify(loaded.details || {}).length;
+  } catch { /* 量不出来就不量 */ }
   items = normalizeItems(migrated || loaded.items);
   archivedProjectIds = new Set((stored[PROJECTS_KEY] || []).filter((project) => project.archived).map((project) => project.id));
   projects = (stored[PROJECTS_KEY] || []).filter((project) => !project.archived);

@@ -30,9 +30,15 @@ const ROOT = path.resolve(__dirname, "..");
 const DIST = path.join(ROOT, "dist");
 
 const arg = (name, fallback = null) => {
-  const hit = process.argv.find((a) => a === `--${name}` || a.startsWith(`--${name}=`));
-  if (!hit) return fallback;
+  // 两种写法都要认：`--version=1.74.0`（自带等号）和 `--version 1.74.0`（值在下一个参数里）。
+  // 只认等号那一种时，`--version 1.74.0` 会被静默当成布尔开关：版本号不升、后面照跑，
+  // 打出来的包还是旧版本号 —— 这种「看起来做了其实没做」最难发现。
+  const index = process.argv.findIndex((a) => a === `--${name}` || a.startsWith(`--${name}=`));
+  if (index < 0) return fallback;
+  const hit = process.argv[index];
   if (hit.includes("=")) return hit.split("=").slice(1).join("=");
+  const next = process.argv[index + 1];
+  if (next && !next.startsWith("--")) return next;
   return true;
 };
 const has = (name) => process.argv.some((a) => a === `--${name}`);

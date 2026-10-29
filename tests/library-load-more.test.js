@@ -42,6 +42,16 @@ const items = Array.from({ length: TOTAL }, (_, i) => {
   };
 });
 
+// 等某张卡片进 DOM：分页是分批渲染的，用固定 sleep 判断「铺完了没有」会偶发假红。
+const waitForCard = async (win, id, timeout = 3000) => {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (win.document.querySelector(`#cardGrid .card[data-id="${id}"]`)) return true;
+    await tick(win, 40);
+  }
+  return false;
+};
+
 function boot(url, overrides = {}) {
   const vc = new VirtualConsole();
   vc.on("jsdomError", () => {});
@@ -224,7 +234,9 @@ const click = (window, element) => element.dispatchEvent(new window.MouseEvent("
     // 「正在读哪一篇」是共享标记，页面初始化时就要在存储里，focus 才会被认下来。
     { laterOnCurrentItem: focusId }
   );
-  await tick(second.window, 250);
+  // 卡片是分批（每批 48 张、靠 rAF 续下一批）铺出来的，机器慢的时候 250 毫秒铺不完：
+  // 固定 sleep 会让这条断言在慢机器上偶发失败。改成「等目标卡片出现」，最多等 3 秒。
+  await waitForCard(second.window, focusId);
   check(
     `目标 ${focusId} 的卡片真的在 DOM 里`,
     !!second.document.querySelector(`#cardGrid .card[data-id="${focusId}"]`),

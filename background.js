@@ -433,7 +433,9 @@ async function migrateLegacyDetails() {
     const items = stored[STORAGE_KEY] || [];
     const legacy = items.filter((item) => item && item.id && ItemStore.DETAIL_FIELDS.some((field) => field in item));
     if (!legacy.length) return 0;
-    const details = { ...(stored[ItemStore.DETAILS_KEY] || {}), ...ItemStore.detailsOf(legacy) };
+    // 详情表优先：索引里那份可能是更早的旧值（比如另一台设备按老格式写回来的），
+    // 详情表里已有一份就别拿旧值盖掉它。
+    const details = { ...ItemStore.detailsOf(legacy), ...(stored[ItemStore.DETAILS_KEY] || {}) };
     await chrome.storage.local.set({ [ItemStore.DETAILS_KEY]: details });
     await chrome.storage.local.set({ [STORAGE_KEY]: ItemStore.indexOf(items) });
     return legacy.length;
@@ -1993,7 +1995,7 @@ async function ensureLegacyCleanup() {
 // 一次性迁移清理：1.14.0 起不再保存网页正文，把旧版本可能残留的
 // contentHtml / wordCount / byline 字段从已有收藏上移除，释放本地空间。
 async function cleanupLegacyContent() {
-  const result = await chrome.storage.local.get(STORAGE_KEY);
+  const result = await chrome.storage.local.get([STORAGE_KEY, ItemStore.DETAILS_KEY]);
   const items = result[STORAGE_KEY] || [];
   let changed = false;
   const cleaned = items.map((item) => {
@@ -2002,7 +2004,9 @@ async function cleanupLegacyContent() {
     changed = true;
     return rest;
   });
-  if (changed) await chrome.storage.local.set({ [STORAGE_KEY]: ItemStore.indexOf(cleaned) });
+  // 写回一定走 writePatch：indexOf 会把摘要 / 封面从索引里剥掉，必须同一次 set
+  // 把它们落进详情表 —— 否则「清理旧正文」会顺手把老数据里的摘要一起删掉。
+  if (changed) await chrome.storage.local.set(ItemStore.writePatch(cleaned, result[ItemStore.DETAILS_KEY]));
 }
 
 function safeHostname(url) {

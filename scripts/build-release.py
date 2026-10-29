@@ -31,6 +31,9 @@ RUNTIME_FILES = (
     "icon32.png",
     "icon48.png",
     "icon128.png",
+    # 索引 / 详情拆分的共享模块：background 用 importScripts 起它，三个页面用 <script> 引它。
+    # 它不在 manifest 里，打包脚本的「manifest 引用完整性」校验看不见它 —— 漏了就装上去才炸。
+    "item-store.js",
     "library.css",
     "library.html",
     "library.js",

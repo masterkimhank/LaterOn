@@ -25,6 +25,32 @@ const check = (label, ok, extra = "") => {
 const PY = process.platform === "win32" ? "python" : "python3";
 const py = (args, options = {}) => spawnSync(PY, args, { cwd: ROOT, encoding: "utf8", ...options });
 
+// ── 静态检查：被引用的脚本必须在发布白名单里（不依赖 python）──────────
+// 打包是「白名单」式的：RUNTIME_FILES 里没写 = 不进包。打包脚本只校验 manifest 的引用，
+// 而 <script src> 和 importScripts 引的文件不在 manifest 里 —— 漏了它们，本地怎么跑都正常，
+// 装上去才炸：service worker 起不来，或者页面拿不到共享模块。
+// 2026-10-29 的索引/详情拆分就踩过：item-store.js 漏在白名单外，包能打出来、能装上去，但后台直接挂。
+{
+  const releaseScript = fs.readFileSync(path.join(ROOT, "scripts/build-release.py"), "utf8");
+  const block = releaseScript.slice(
+    releaseScript.indexOf("RUNTIME_FILES"),
+    releaseScript.indexOf("RUNTIME_DIRS")
+  );
+  const allowed = new Set([...block.matchAll(/"([^"\n]+)"/g)].map((m) => m[1]));
+  const referenced = new Set();
+  for (const page of ["library.html", "sidepanel.html", "settings.html"]) {
+    const html = fs.readFileSync(path.join(ROOT, page), "utf8");
+    for (const m of html.matchAll(/<script[^>]+src="([^"]+)"/g)) referenced.add(m[1]);
+  }
+  const backgroundSource = fs.readFileSync(path.join(ROOT, "background.js"), "utf8");
+  for (const call of backgroundSource.matchAll(/importScripts\(([^)]*)\)/g)) {
+    for (const m of call[1].matchAll(/"([^"]+)"/g)) referenced.add(m[1]);
+  }
+  check("白名单解析出来了（大小合理）", allowed.size > 20, `${allowed.size} 项`);
+  const missing = [...referenced].filter((name) => !allowed.has(name)).sort();
+  check("页面与后台引用的脚本都在发布白名单里", missing.length === 0, missing.join(", "));
+}
+
 // 没有 python 就跑不了打包脚本本身，跳过而不是判失败（打包前本来就要求装 python）。
 const probe = py(["--version"]);
 if (probe.error || probe.status !== 0) {

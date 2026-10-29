@@ -406,9 +406,10 @@ async function init() {
   const rawItems = migrated || loaded.items;
   items = normalizeItems(rawItems);
   // 补齐的 doneAt 要写回存储，否则下次打开又变回「没有时间」，永远不会被清除。
-  // 只写索引：摘要/封面在各自的键上，别在这里重写一遍。
+  // 写回必须连详情表一起：索引里已经不存摘要 / 封面，剥掉的值要在同一次 set 里落进详情表，
+  // 否则「这次补 doneAt」会把老数据里还没搬家的摘要顺手删掉。
   if (items.some((item, i) => item.doneAt && !Number(rawItems[i]?.doneAt))) {
-    chrome.storage.local.set({ [STORAGE_KEY]: ItemStore.indexOf(items) });
+    chrome.storage.local.set(ItemStore.writePatch(items, loaded.details));
   }
   projects = sortPinnedFirst(result[PROJECTS_KEY] || []);
   // 首屏卡片建出来时自己就会把下拉填对，初始化这次 render 不必再全量重建一遍下拉
