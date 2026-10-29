@@ -13,7 +13,7 @@
 
 ![LaterOn 全屏项目管理与浏览器侧栏](docs/lateron-overview.webp)
 
-<p align="center"><sub>当前版本 <strong>1.73.0</strong>（二次开发版）· <a href="https://github.com/masterkimhank/LaterOn/releases/latest">下载最新版</a> · <a href="CHANGELOG.md">改动记录</a></sub></p>
+<p align="center"><sub>当前版本 <strong>1.74.0</strong>（二次开发版）· <a href="https://github.com/masterkimhank/LaterOn/releases/latest">下载最新版</a> · <a href="CHANGELOG.md">改动记录</a></sub></p>
 
 ## LaterOn 能做什么
 
@@ -69,7 +69,7 @@ LaterOn 目前通过开发者模式安装，主体功能支持 Chrome / Edge 121
 
 ## 相对上游版本的改动
 
-本仓库基于上游 `1.66.1` 继续开发，目前已到 `1.73.0`：
+本仓库基于上游 `1.66.1` 继续开发，目前已到 `1.74.0`：
 
 | 版本 | 改动 |
 | --- | --- |
@@ -81,7 +81,7 @@ LaterOn 目前通过开发者模式安装，主体功能支持 Chrome / Edge 121
 | 1.72.0 | 700 条量级的性能优化（首屏 3186ms → 1974ms） |
 | 1.72.1 | 修掉 1.72.0 优化自身引入的五个问题（高亮丢失、下拉重建、滚动条抖动等） |
 | 1.73.0 | 多设备同步（WebDAV，按记录合并、删除可同步、并发写不互相覆盖）；侧栏透明封面不再透出 Logo；修打包脚本漏检子目录垃圾文件 |
-| 未发布 | 固定扩展 ID：解压到任何文件夹、任何电脑，装的都是同一个扩展，收藏不再因换路径读不到；侧栏补上「全部 / 等待整理」搜索范围开关和「关闭已打开」入口；加入真浏览器端到端测试 |
+| 1.74.0 | 固定扩展 ID（换文件夹不再丢数据，升级前需先导出）；同一篇文章的两种网址不再存成两条；收藏库卡片分页；侧栏补上「全部 / 等待整理」搜索范围开关与「关闭已打开」；摘要与封面改存到详情表（700 条时列表 400KB → 191KB）；加入真浏览器端到端测试 |
 
 每条改动的现象与原因见 [CHANGELOG.md](CHANGELOG.md)；根因、动了哪些文件、怎么验证见 [IMPROVEMENTS.md](IMPROVEMENTS.md)。
 

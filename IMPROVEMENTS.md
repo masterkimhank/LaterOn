@@ -25,6 +25,7 @@
 | — | 2026-10-29 | 性能优化 | 收藏库卡片分页：首屏一页 + 滚到底续画 | `library.js` `library.html` `library.css` `i18n.js` | `library-load-more.test.js`（30 项）、e2e 新 spec（12 项）、`card-order.test.js` 追加 7 项 |
 | — | 2026-10-29 | 修复 | 同一篇文章的另一种网址被当成新条目（同站点 + 同标题 + 路径相近） | `url-utils.js` `background.js` | `article-identity.test.js`（9 组） |
 | — | 2026-10-29 | 性能优化 | 收藏数据分两处存（索引 + 详情表），写一条不再重写整表 | `item-store.js` `background.js` `library.js` `sidepanel.js` `settings.js` `webdav-sync.js` | `item-store.test.js`（36 项） |
+| 1.74.0 | 2026-10-30 | 发版 | 把 2026-10-29 那批改动合成一版发出去（e2e 基建 / 固定 ID / 侧栏两项 / 分页 / 认人 / 拆分）+ 发版前自查修掉 6 处 | `manifest.json` `scripts/build-release.py` `background.js` `library.js` `sidepanel.js` `tests/*` | `details-safety.test.js`（9 项）、白名单静态校验（2 项） |
 
 ---
 
@@ -866,6 +867,40 @@ YouTube 视频 ID），对「同一篇内容挂着两个结构上完全不同的
 - 反证一：`splitItem` 直接 `return { index: item, detail: null }`（等于不拆分）→
   `item-store.test.js`、`cover-upload.test.js`、`edit-item.test.js` 三份全部退出码 1。
 - 反证二：`migrateLegacyDetails` 开头 `return 0`（等于不迁移）→ 迁移那组断言报红、退出码 1。
+
+---
+
+## 1.74.0 发版前自查（2026-10-30）
+
+**为什么单独一轮**：索引 / 详情拆分动了存储格式，而「顺手把整个索引写回去」这类写法读上去完全正常、
+出错也不报错（只是数据少了）。所以照着这条线索把全仓的 `set({ laterOnItems: … })`、
+`ItemStore.indexOf(…)`、打包白名单、时间相关的用例逐个过了一遍，抓到 6 处。
+
+| # | 问题 | 不修的后果 | 改法 |
+|---|---|---|---|
+| 1 | `cleanupLegacyContent()` 清 1.14.0 的旧正文时只写索引 | 从很老的版本一路升上来的用户，摘要会跟着被剥掉，且不报错 | 改用 `writePatch(cleaned, 现详情表)` |
+| 2 | `library.js` init 补写 `doneAt` 时只写索引 | 同上 | 同上（用 `loaded.details`） |
+| 3 | `build-release.py` 的 `RUNTIME_FILES` 漏了 `item-store.js` | 发布包缺文件 → `importScripts` 失败，**service worker 直接起不来**，装上就废；而打包脚本只校验 manifest 的引用，看不见 `<script src>` / `importScripts` | 补白名单 + 加静态护栏（解析白名单，比对三个 HTML 的 `script src` 与 background 的 `importScripts`） |
+| 4 | 侧栏 `seg.bytes` 只量索引 | 「网页数据异常大」那条自检提示永远触发不了（阈值 300KB，索引只剩一半） | 索引 + 详情表一起量 |
+| 5 | `webdav-sync-transport.test.js` 用 `toISOString()` 拼备份文件名 | 内核 `backupName` 用的是**本地**日期，东八区凌晨 0–8 点差一天 → 用例必红（9 条断言） | 按本地日期拼，并写清为什么 |
+| 6 | `library-load-more.test.js` 用固定 `sleep(250)` 等分页铺完 | 分页是每批 48 张靠 rAF 续的，慢机器上没铺完 → 偶发假红（目标卡片不在 DOM、页脚 hidden） | 改成轮询等目标卡片出现（最多 3 秒） |
+
+**考虑过、最后没做的**：担心「还停在旧版的设备上传的记录里没有 `description`，会把别的设备的摘要
+盖成空」。查下来不会：每台设备上传的都是**从它自己存储里拼出来的完整条目**，而拆分只发生在已经升级的
+那台机器上 —— 旧版设备的存储本来就带着摘要；备份格式 `Core.backupData()` 也会把缺字段归一化。
+真要「修」就得回答「用户主动清空摘要（`""`）和旧版读不到（缺字段）怎么区分」，这个二义带来的风险
+大于收益，所以只在 CHANGELOG 里写「建议所有设备一起升级」。
+
+**顺带收紧的两处**：迁移时详情表优先（索引里残留的旧值不再覆盖详情表里的新值）；
+`webdav-sync-transport.test.js` 改为加载真实的 `item-store.js`（以前跑的是退化版，测不到拆分后的真实路径）。
+
+**验证**
+
+- `node scripts/test-all.js` → **77/77**，51 秒（新增 `details-safety.test.js`）。
+- `node scripts/test-e2e.js` → 6/6 spec。
+- 反证：把第 1、2 处的 `writePatch` 改回「只写索引」→ `details-safety.test.js` 4 条断言红、退出码 1；
+  从 `RUNTIME_FILES` 删掉 `item-store.js` → 白名单校验报红（`item-store.js`）；
+  `revealItem` 直接 `return false` → `library-load-more.test.js` 2 条红。
 
 ---
 
