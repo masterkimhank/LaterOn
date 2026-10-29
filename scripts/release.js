@@ -90,16 +90,15 @@ if (wanted && wanted !== true) {
 }
 
 // ── 2. 校验记录与分支 ────────────────────────────────────
-const changelog = fs.readFileSync(path.join(ROOT, "CHANGELOG.md"), "utf8");
-// 用位置查找而不是一条正则：CHANGELOG 的段与段之间既可能是「## 下一版」也可能是「---」分隔线，
-// 而 multiline 正则里的 $ 会在第一个换行就命中，惰性匹配会当场截断（踩过一次）。
-const startIdx = changelog.search(new RegExp(`^## ${version.replace(/\./g, "\\.")}\\b`, "m"));
-if (startIdx === -1) fail(`CHANGELOG.md 缺少「## ${version}」段落`);
-const tail = changelog.slice(startIdx + 1);
-const endMatch = tail.search(/\n## |\n---\n/);
-const section = endMatch === -1 ? changelog.slice(startIdx) : changelog.slice(startIdx, startIdx + 1 + endMatch);
-const notes = section.replace(/^## [^\n]*\n/, "").trim();
-if (notes.length < 40) fail(`CHANGELOG「## ${version}」这段太短（不到 40 字），写清楚改了什么再发`);
+// CHANGELOG 段落的抽取和「这段太短就拒发」的判断都在 scripts/release-notes.js 里：
+// 打 tag 自动发版的 GitHub Actions 用的是同一份实现，本地和 CI 的说明必须一致。
+const { notesFor } = require("./release-notes");
+let notes;
+try {
+  notes = notesFor(version);
+} catch (error) {
+  fail(error.message);
+}
 
 if (!fs.readFileSync(path.join(ROOT, "IMPROVEMENTS.md"), "utf8").includes(version)) {
   console.log(`· 提醒：IMPROVEMENTS.md 里没有提到 ${version}，工程记录可能漏了`);
@@ -172,7 +171,8 @@ if (!gh) fail("找不到 gh。装一个（winget install --id GitHub.cli -e）�
 if (!run(gh, ["auth", "status"]).ok) fail("gh 没登录：先在终端跑 gh auth login");
 
 const noteFile = path.join(os.tmpdir(), `lateron-release-${version}.md`);
-fs.writeFileSync(noteFile, `## 本版改动\n\n${notes}\n`, "utf8");
+// notes 已经是完整正文（含「本版改动」与「安装」两节），直接写盘
+fs.writeFileSync(noteFile, notes, "utf8");
 
 const slug = repoSlug();
 
@@ -208,7 +208,9 @@ console.log("· 创建 GitHub Release…");
 const rel = run(gh, [
   "release", "create", tag, zipPath,
   "--repo", slug,
-  "--title", `${version}（二次开发版）`,
+  // 标题带上 -my.N：同一个版本号可能发过好几次（my.1 / my.2），
+  // 只用版本号会让 Releases 列表里出现两条一模一样的标题。
+  "--title", `${tag.replace(/^v/, "")}（二次开发版）`,
   "--notes-file", noteFile,
 ]);
 if (!rel.ok) fail(`Release 创建失败（tag 已经推上去了，可重试或到网页手动建）：\n${rel.out}`);

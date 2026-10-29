@@ -1,0 +1,84 @@
+name: Release
+
+# 推 tag 自动发版：不用在本机装 gh、也不受本机代理影响。
+# 本地 `node scripts/release.js --publish` 仍然可用（它多一道「工作区必须干净」的门禁），
+# 两条路产出同样的包和同样的说明——因为说明都来自 scripts/release-notes.js。
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "已有 tag，用于补建 Release，例如 v1.72.1-my.2"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - name: 检出 tag 对应的代码
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          # 发布用的 token 只在 gh 那一步显式给，检出阶段不留凭据
+          persist-credentials: false
+
+      - name: 准备 Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "22"
+
+      # 仓库故意没有 package.json（纯 JS 直接加载），测试又依赖 jsdom，
+      # 所以这里临时装一份、不写回 package.json / lock。
+      # 装不上（比如 registry 抽风）不算失败：发版门禁本来就在本地 release.js 上，
+      # CI 只做二次确认，不该因为装不上依赖就完全发不出去。
+      - name: 安装测试依赖 jsdom
+        id: jsdom
+        continue-on-error: true
+        run: npm install --no-save --no-package-lock --no-audit --no-fund jsdom
+
+      - name: 跑全量测试
+        if: steps.jsdom.outcome == 'success'
+        run: node scripts/test-all.js
+
+      - name: 跳过测试的提示
+        if: steps.jsdom.outcome != 'success'
+        run: echo "::warning::jsdom 装不上，跳过测试；本地请先跑 node scripts/test-all.js 再打 tag"
+
+      # 校验 tag 与 manifest.json 的版本是否一致，并把 CHANGELOG 段落 + 安装步骤
+      # 写成发布说明。这一段必须和本地 release.js 用同一个脚本，否则两边的说明会不一样。
+      - name: 校验 tag 并生成发布说明
+        run: node scripts/release-notes.js --tag "$TAG" --out "$RUNNER_TEMP/release-notes.md"
+
+      - name: 打包（allowlist + 回读校验）
+        run: python3 scripts/build-release.py
+
+      - name: 创建 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # v1.72.1-my.2 → 1.72.1（manifest 版本，决定 zip 文件名）
+          VERSION="${TAG#v}"
+          VERSION="${VERSION%%-my.*}"
+          ZIP="dist/LaterOn-${VERSION}.zip"
+          test -f "$ZIP" || { echo "没有找到 $ZIP，先看打包步骤"; exit 1; }
+          # --verify-tag：tag 不存在就失败，不会凭空造一个；标题带 -my.N，
+          # 免得同一个版本号发过几次后列表里出现两条一模一样的标题
+          gh release create "$TAG" "$ZIP" \
+            --verify-tag \
+            --title "${TAG#v}（二次开发版）" \
+            --notes-file "$RUNNER_TEMP/release-notes.md"
