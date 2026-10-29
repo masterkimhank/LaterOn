@@ -49,6 +49,20 @@ const cardMap = new Map();
 // 完整收藏库也可能累积到上千条。第一屏同步画 48 张（桌面宽屏也足够覆盖数屏），
 // 其余分批排进空闲时间，避免一次 render() 长时间占住主线程。
 const LIBRARY_RENDER_BATCH = 48;
+// 一页多少张。以前是「分批画，但最终全画出来」：700 条时 DOM 里躺着 700 张卡、
+// 一万八千多个节点，翻到中间再改一条，浏览器仍要为整棵子树做样式计算。
+// 现在改成真正的分页：只铺这一页，翻到底（或点「加载更多」）再续一页。
+const LIBRARY_PAGE_SIZE = 48;
+// 当前筛选 + 排序之后的**完整**结果（几千条也只是数组，不生成 DOM）。
+// 排序、全选、批量打开都按它算——不能按已经铺出来的卡片算，否则「已选 40 篇」
+// 和屏幕上的 48 张对不上，翻过一页之后「全选」还会变成「取消全选」。
+let visibleItems = [];
+// 允许铺成卡片的数量上限（翻到第几页）。它只是一块「泄压阀」，数据本身没被截断。
+let renderLimit = LIBRARY_PAGE_SIZE;
+// 决定「眼前是哪一批东西、按什么顺序」的签名：项目 / 搜索词 / 阅读筛选 / 排序 / 搜索范围。
+// 只有它变了才把分页打回第一页；单纯的数据更新（标已读、改标题）保留用户已经翻到的位置，
+// 否则每点一次「标为已读」，列表就弹回顶部，人得重新往下翻。
+let visibleScopeKey = "";
 let libraryRenderToken = 0;
 let dragPreview = null;
 // 当前这次拖拽的全部状态（null = 现在没在拖）。卡片视图和图板视图共用同一套逻辑，
@@ -110,6 +124,8 @@ const tr = (key, vars) => {
     closeTabsDone: "已关闭 {n} 个标签页，收藏都还在",
     closeTabsNone: "「{name}」里没有已打开的标签页",
     closeTabsNoItems: "「{name}」里还没有收藏",
+    loadMore: "加载更多（还有 {n} 篇）",
+    loadMoreProgress: "已显示 {shown} / {total} 篇",
     quietHint: "打开一个有价值的网页，点击浏览器工具栏中的 LaterOn 图标即可添加。",
     noBoard: "没有匹配的类目", noBoardHint: "换个关键词，或切换顶部的阅读状态筛选。",
     boardCount: "{groups} 个项目 · 共 {total} 篇网页 · {unfinished} 篇没看完", notFinished: "没看完",
@@ -465,8 +481,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
   if (area === "local" && changes[CURRENT_ITEM_KEY]) {
     currentItemId = changes[CURRENT_ITEM_KEY].newValue || null;
+    // 那一篇可能还在后面几页没铺出来——先把它所在的那一段铺出来，再高亮 + 滚过去。
+    if (revealItem(currentItemId)) locateCard(currentItemId);
     applyCurrentHighlight();
-    locateCard(currentItemId);
   }
   if (area === "local" && changes[ORDER_KEY]) {
     orders = changes[ORDER_KEY].newValue || {};
@@ -856,9 +873,10 @@ async function commitCardOrder(dropIndex) {
   if (!draggedId || dropIndex == null) return;
   const scoped = items.filter((item) => activeProject === "all" || (activeProject === "unfiled" ? !item.projectId : item.projectId === activeProject));
   // 屏幕上现在这个顺序里，被拖的这张应该排到谁前面（null = 排最后）。
-  const visibleIds = [...grid.querySelectorAll(".card")]
-    .map((card) => card.dataset.id)
-    .filter((id) => id && id !== draggedId);
+  // 位置按「这次筛选出来的全部条目」算，不是按已经铺出来的卡片算：
+  // 分页之后 grid 里只有一页，拿 DOM 当基准的话，「拖到这一页末尾」会被当成
+  // 「拖到所有条目的最后」，一篇本来在中间的文章就被扔到列表末尾去了。
+  const visibleIds = visibleItems.map((item) => item.id).filter((id) => id !== draggedId);
   const anchorId = visibleIds[dropIndex] ?? null;
 
   const full = scopeOrder(scoped).filter((id) => id !== draggedId);
@@ -1059,10 +1077,29 @@ function renderCardsView() {
     ? tr(inboxOnly ? "searchCountInbox" : "searchCount", { count: visible.length, unfinished: visible.filter((item) => item.status !== "done").length })
     : tr("scopedCount", { count: scopedItems.length, unfinished: scopedItems.filter((item) => item.status !== "done").length });
 
+  // 换了项目 / 搜索词 / 阅读筛选 / 排序 / 搜索范围 = 换了一批东西，分页回到第一页；
+  // 只是条目内容或数量变了（标已读、改标题、别的设备同步过来），保留已经翻到的那一页——
+  // 否则用户在第三页标一下已读，整页就跳回顶部了。
+  const scopeKey = [activeProject, query, filter, sort, searchScope].join("\u0001");
+  if (scopeKey !== visibleScopeKey) {
+    visibleScopeKey = scopeKey;
+    renderLimit = LIBRARY_PAGE_SIZE;
+  }
+  visibleItems = visible;
+  // 从侧栏「展开」进来要滚到正在读的那一篇：它在第几页，就把那一页也铺出来，
+  // 否则 locateCard 找不到卡片，用户只会看到一个没有目标、也不知道还能往下翻的列表。
+  if (initialLocateItemId) {
+    const targetIndex = visible.findIndex((item) => item.id === initialLocateItemId);
+    if (targetIndex >= renderLimit) renderLimit = targetIndex + 1;
+  }
+  renderLimit = Math.min(Math.max(renderLimit, LIBRARY_PAGE_SIZE), visible.length);
+
   // 增量更新：只增删/重排发生变化的卡片，保留已有 DOM（不丢滚动、不重建监听）。
-  const visibleIds = new Set(visible.map((item) => item.id));
+  // 比上限更靠后的卡片要一并卸掉：它们已经不在这一页里了，留着就是白占内存。
+  const indexOfId = new Map(visible.map((item, index) => [item.id, index]));
   for (const [id, card] of cardMap) {
-    if (!visibleIds.has(id)) { card.remove(); cardMap.delete(id); }
+    const index = indexOfId.get(id);
+    if (index === undefined || index >= renderLimit) { card.remove(); cardMap.delete(id); }
   }
   const token = ++libraryRenderToken;
   renderCards(visible, 0, token);
@@ -1097,6 +1134,8 @@ function syncViewUI() {
   const board = isBoardView();
   grid.hidden = board;
   boardGrid.hidden = !board;
+  // 图板视图没有分页那回事，别把「加载更多」留在页面底下。
+  if (board) { const footer = document.querySelector("#loadMore"); if (footer) footer.hidden = true; }
   sortSelect.hidden = board;
   const selectButton = document.querySelector("#selectMode");
   if (selectButton) selectButton.hidden = board;
@@ -1454,7 +1493,10 @@ function nextLibraryRender(fn) {
 
 function renderCards(visible, start, token) {
   if (token !== libraryRenderToken) return;
-  const end = Math.min(start + LIBRARY_RENDER_BATCH, visible.length);
+  // 只画到「已经翻到的那一页」。visible 本身是完整的，截断发生在 DOM 这一层。
+  const limit = Math.min(renderLimit, visible.length);
+  if (start >= limit) { syncLoadMore(); applyCurrentHighlight(); return; }
+  const end = Math.min(start + LIBRARY_RENDER_BATCH, limit);
   for (let index = start; index < end; index += 1) {
     const item = visible[index];
     let card = cardMap.get(item.id);
@@ -1466,16 +1508,58 @@ function renderCards(visible, start, token) {
     const targetId = initialLocateItemId;
     initialLocateItemId = null;
     requestAnimationFrame(() => locateCard(targetId));
-  } else if (end >= visible.length) {
+  } else if (end >= limit) {
     // 当前筛选里没有这篇时尊重筛选，不强行跳档；同时结束这次定位任务。
+    // （定位的那一篇在 renderCardsView() 里已经先把上限撑到它所在的位置，
+    //   所以「翻到这一页还没找到」= 它确实不在这次的结果里。）
     initialLocateItemId = null;
   }
-  if (end < visible.length) {
+  if (end < limit) {
     nextLibraryRender(() => renderCards(visible, end, token));
     return;
   }
   // 只在整次渲染的最后一批结束时高亮一次，而不是每批都扫一遍全部卡片。
   applyCurrentHighlight();
+  syncLoadMore();
+}
+
+// ── 分页：首屏只铺一页，滚到底再续 ────────────────────────────
+// 页面底部那一块「已显示 48 / 700 · 加载更多」。它既是一个显式按钮（键盘、
+// 没有 IntersectionObserver 的环境都能用），也是自动续载的观察点：
+// 快滚到它的时候（rootMargin 提前 400px）就先铺下一页，滚到底时内容已经在那儿了。
+function syncLoadMore() {
+  const footer = document.querySelector("#loadMore");
+  if (!footer) return;
+  const total = visibleItems.length;
+  const shown = cardMap.size;
+  if (!total || shown >= total) { footer.hidden = true; return; }
+  footer.hidden = false;
+  const button = footer.querySelector("button");
+  const label = tr("loadMore", { n: total - shown });
+  if (button && button.textContent !== label) button.textContent = label;
+  setText(footer.querySelector(".load-more-progress"), tr("loadMoreProgress", { shown, total }));
+}
+
+function loadMoreCards() {
+  if (renderLimit >= visibleItems.length) return;
+  renderLimit = Math.min(renderLimit + LIBRARY_PAGE_SIZE, visibleItems.length);
+  const token = ++libraryRenderToken;
+  // 前面那一段已经在 DOM 里、顺序也没变，直接从现有末尾往下接；
+  // 万一对不上（比如上一批还没画完就被打断），老老实实从头铺一遍，保证顺序正确。
+  const start = grid.children.length === cardMap.size ? cardMap.size : 0;
+  renderCards(visibleItems, start, token);
+}
+
+document.querySelector("#loadMore button")?.addEventListener("click", loadMoreCards);
+// 滚到底自动续一页。没有 IntersectionObserver 的环境（jsdom、很老的浏览器）
+// 就只剩下按钮——功能不缺，只是要多点一下。
+if (typeof IntersectionObserver === "function") {
+  const footer = document.querySelector("#loadMore");
+  if (footer) {
+    new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) loadMoreCards();
+    }, { rootMargin: "400px 0px" }).observe(footer);
+  }
 }
 
 // YouTube 的最大分辨率封面（maxresdefault）对部分视频并不存在，
@@ -1534,6 +1618,19 @@ function locateCard(id) {
   const card = cardMap.get(id);
   // jsdom / 极端环境下没有 scrollIntoView，包一层避免报错（真实浏览器里才有用）。
   if (card && typeof card.scrollIntoView === "function") card.scrollIntoView({ block: "center", behavior: "smooth" });
+}
+
+// 要定位的那一篇如果还在后面几页没铺出来，就先把上限撑到它那里。
+// 分页之后「正在读的那篇在第 300 条」是常态：不先把那一段铺出来，
+// 侧栏点开文章时这边既不会高亮也不会滚过去，看着像「没反应」。
+function revealItem(id) {
+  if (!id) return false;
+  const index = visibleItems.findIndex((item) => item.id === id);
+  if (index < 0) return false;
+  if (index < renderLimit) return true;
+  renderLimit = index + 1;
+  renderCards(visibleItems, 0, ++libraryRenderToken);
+  return true;
 }
 
 // 卡片是复用的 DOM，封面换了要能同步刷新（用户自己上传/移除封面时尤其明显）。
@@ -2727,7 +2824,9 @@ function updateSelectionUI() {
   const countEl = document.querySelector("#bulkCount");
   if (countEl) countEl.textContent = tr("selectCount", { count });
   const allBtn = document.querySelector("#bulkSelectAll");
-  if (allBtn) allBtn.textContent = count > 0 && count >= grid.children.length ? tr("deselectAll") : tr("selectAll");
+  // 分母是「这次筛选出来的全部条目」，不是 DOM 里的卡片数：
+  // 分页之后卡片只有一页，拿它当分母会让「全选」永远变不成「取消全选」。
+  if (allBtn) allBtn.textContent = count > 0 && count >= visibleItems.length ? tr("deselectAll") : tr("selectAll");
 }
 
 async function bulkUpdate(patch) {
@@ -2790,9 +2889,9 @@ async function bulkDelete() {
 }
 
 function selectedItemsInViewOrder() {
-  const byId = new Map(items.map((item) => [item.id, item]));
-  const orderedIds = [...grid.querySelectorAll(".card[data-id]")].map((card) => card.dataset.id);
-  return orderedIds.filter((id) => selectedIds.has(id)).map((id) => byId.get(id)).filter(Boolean);
+  // 按列表顺序给选中的条目排序（不是按点击先后）。分页之后不能读 DOM：
+  // 还没铺出来的条目也会被选中（「全选」就是这么选的），它们同样要参与这次操作。
+  return visibleItems.filter((item) => selectedIds.has(item.id));
 }
 
 async function bulkOpenInNewWindow() {
@@ -2820,11 +2919,16 @@ document.querySelector("#selectMode")?.addEventListener("click", () => setSelect
 // 关掉这个项目里已打开的标签页（收藏保留）。范围取当前所在项目，点了才现查现关。
 document.querySelector("#closeProjectTabs")?.addEventListener("click", () => closeProjectTabs(activeProject));
 document.querySelector("#bulkSelectAll")?.addEventListener("click", () => {
-  const allSelected = selectedIds.size >= grid.children.length && grid.children.length > 0;
-  [...grid.children].forEach((card) => {
-    const item = items.find((entry) => entry.id === card.dataset.id);
-    if (item) toggleSelect(item.id, card, !allSelected);
-  });
+  // 全选覆盖「这次筛选出来的全部条目」，包括还没铺出来的那几页——
+  // 用户按下的是「全选」，不是「选这一页」。没铺出来的条目只记 id，
+  // 等它们被翻出来时 createCard() 会照着 selectedIds 补上勾选状态。
+  const allSelected = visibleItems.length > 0 && visibleItems.every((item) => selectedIds.has(item.id));
+  for (const item of visibleItems) {
+    const card = cardMap.get(item.id);
+    if (card) toggleSelect(item.id, card, !allSelected);
+    else if (allSelected) selectedIds.delete(item.id);
+    else selectedIds.add(item.id);
+  }
   updateSelectionUI();
 });
 document.querySelector("#bulkRead")?.addEventListener("click", () => bulkUpdate({ status: "done" }));

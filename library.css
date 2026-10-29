@@ -598,6 +598,19 @@ footer { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-it
 }
 .close-tabs:hover { background: var(--field); border-color: var(--accent); color: var(--accent); }
 .close-tabs[hidden] { display: none; }
+/* 分页页脚：不是内容，是「还有下文」的路标，所以比卡片安静——一行灰字 + 一颗胶囊按钮。
+   display:flex 会盖掉浏览器给 [hidden] 的默认 display:none，必须自己补一条。 */
+.load-more { display: flex; flex-direction: column; align-items: center; gap: 9px; margin: 30px 0 6px; }
+.load-more[hidden] { display: none; }
+.load-more-progress { margin: 0; color: var(--subtle); font-size: 11.5px; font-weight: 550; letter-spacing: .02em; }
+.load-more-button {
+  border: 1px solid var(--hairline-2); border-radius: 99px; padding: 9px 20px;
+  background: var(--glass-strong); color: var(--chip-text); font-family: inherit;
+  font-size: 12.5px; font-weight: 650; box-shadow: var(--shadow-sm);
+  transition: background .15s, color .15s, border-color .15s;
+}
+.load-more-button:hover { background: var(--field); border-color: var(--accent); color: var(--accent); }
+.load-more-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .grid.selecting .card { cursor: pointer; }
 .grid.selecting .card:hover { transform: none; }
 .select-badge {

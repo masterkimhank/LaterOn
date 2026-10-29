@@ -94,23 +94,24 @@ async function run(n, mode) {
   require('./helpers/item-mutation')(window);
 
   // 内部状态与计时钩子必须拼进同一个脚本：const/let 不挂 window，只能共享词法作用域。
+  // 计时口径（分页之后）：
+  //   firstRenderMs = 首屏那一次 render() 的耗时（卡片视图 = 一页 48 张；图板视图 = 整墙）；
+  //   fullRenderMs  = 把上限撑到全部条目再画一遍的耗时，用来看「整库铺开」的代价。
   const epilogue = `
 ;globalThis.__b = {
   render, renderCardsView, applyCurrentHighlight, normalizeItems, fillProjectSelect, updateCard,
   createCard, formatTime,
   get items(){ return items }, get cardMap(){ return cardMap }, get grid(){ return grid },
+  get renderLimit(){ return renderLimit },
+  setRenderLimit(v){ renderLimit = v; },
   setQuery(v){ query = v; }
 };
-globalThis.__bench = { done: null, t0: 0 };
+globalThis.__bench = { first: null };
 const __origRender = render;
-render = function () { globalThis.__bench.t0 = performance.now(); globalThis.__bench.done = null; return __origRender(); };
-const __origRenderCards = renderCards;
-renderCards = function (visible, start, token) {
-  const out = __origRenderCards(visible, start, token);
-  if (start + LIBRARY_RENDER_BATCH >= visible.length && globalThis.__bench.done === null) {
-    globalThis.__bench.done = performance.now() - globalThis.__bench.t0;
-  }
-  return out;
+render = function () {
+  const t = performance.now();
+  __origRender();
+  if (globalThis.__bench.first === null) globalThis.__bench.first = performance.now() - t;
 };`;
   const tEval0 = now();
   window.eval(read('library.js') + epilogue);
@@ -119,16 +120,37 @@ renderCards = function (visible, start, token) {
   await new Promise((resolve) => {
     const started = Date.now();
     const tick = () => {
-      if (window.__bench.done !== null || Date.now() - started > 30000) resolve();
+      if (window.__bench.first !== null || Date.now() - started > 30000) resolve();
       else window.setTimeout(tick, 2);
     };
     tick();
   });
 
   const b = window.__b;
+  // 首屏数字取到之后，把上限撑到全部条目，量一次「整库铺开」。
+  // 注意不能只掐 renderCardsView() 那一下：它同步只画一批（48 张），其余排进空闲时间，
+  // 只掐那一下会把「整库」量成「一页」。这里等到卡片数量不再增长为止。
+  let fullMs = -1;
+  if (!unfiled) {
+    fullMs = 0;
+  } else {
+    b.setRenderLimit(1e9);
+    const tFull = now();
+    b.renderCardsView();
+    let prev = -1;
+    for (let i = 0; i < 400; i += 1) {
+      const count = window.document.querySelectorAll('#cardGrid .card').length;
+      if (count === prev) break;
+      prev = count;
+      await new Promise((r) => window.setTimeout(r, 5));
+    }
+    fullMs = +(now() - tFull).toFixed(1);
+  }
+
   const out = {
     n, mode, payloadKB, evalMs,
-    firstRenderMs: window.__bench.done === null ? -1 : +window.__bench.done.toFixed(1),
+    firstRenderMs: window.__bench.first === null ? -1 : +window.__bench.first.toFixed(1),
+    fullRenderMs: fullMs,
     cards: window.document.querySelectorAll('#cardGrid .card').length,
     nodes: window.document.querySelectorAll('#cardGrid *').length,
     boards: window.document.querySelectorAll('#boardGrid > *').length

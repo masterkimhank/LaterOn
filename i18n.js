@@ -45,6 +45,9 @@
       closeTabsDone: "已关闭 {n} 个标签页，收藏都还在",
       closeTabsNone: "「{name}」里没有已打开的标签页",
       closeTabsNoItems: "「{name}」里还没有收藏",
+      // 分页：列表不会一次全铺出来，底部这一行说明还剩多少（按钮点一下续一页）
+      loadMore: "加载更多（还有 {n} 篇）",
+      loadMoreProgress: "已显示 {shown} / {total} 篇",
       themeHint: "浅色 / 深色 / 跟随系统", sortCustomDragged: "自定义顺序（拖拽卡片排的）", unitDays: "天",
       autoCleanDaysLabel: "已读网页自动清除天数", loading: "读取中…",
       shortcutsNote: "这些是全局快捷键，用于在任意网页上添加或翻译。Chrome 不允许扩展在内部修改快捷键，请在 Chrome 的快捷键页面设置。",
@@ -223,6 +226,8 @@
       closeTabsDone: "Closed {n} tab(s). Everything is still saved.",
       closeTabsNone: "No open tabs for “{name}”",
       closeTabsNoItems: "“{name}” has no saved pages yet",
+      loadMore: "Load more ({n} left)",
+      loadMoreProgress: "Showing {shown} of {total}",
       themeHint: "Light / Dark / Follow system", sortCustomDragged: "Custom order (drag cards to arrange)", unitDays: "days",
       autoCleanDaysLabel: "Days before read pages are removed", loading: "Loading…",
       shortcutsNote: "These are global shortcuts for adding or translating on any page. Chrome doesn’t let extensions change them internally — set them in Chrome’s shortcut settings.",

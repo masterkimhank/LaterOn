@@ -140,6 +140,13 @@
           <p data-i18n="quietHint">打开一个有价值的网页，点击浏览器工具栏中的 LaterOn 图标即可添加。</p>
         </section>
         <section id="cardGrid" class="grid" aria-live="polite"></section>
+        <!-- 分页：卡片一开始只铺一页，滚到这里（或点按钮）再续下一页。
+             按钮是给键盘和「没有 IntersectionObserver」的环境留的兜底，
+             正常滚动时它会先被观察器触发，用户看到的是无缝续载。 -->
+        <div id="loadMore" class="load-more" hidden>
+          <p class="load-more-progress"></p>
+          <button type="button" class="load-more-button">加载更多</button>
+        </div>
         <section id="boardGrid" class="board-grid" aria-live="polite" hidden></section>
         </main>
 

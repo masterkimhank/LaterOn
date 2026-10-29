@@ -22,6 +22,7 @@
 | — | 2026-10-29 | 稳定性 | 固定扩展 ID，换目录/换机器不再丢数据 | `manifest.json` `scripts/extension-id.js` `tests/extension-id.test.js` `tests/e2e/extension-smoke.spec.js` `tests/release-package-hygiene.test.js` | `extension-id.test.js`（10 项）、e2e 换目录实测（2 项） |
 | — | 2026-10-29 | 新功能 | 侧栏补上搜索范围开关（全部 / 等待整理） | `sidepanel.html` `sidepanel.css` `sidepanel.js` `i18n.js` | `sidepanel-search-scope.test.js`（18 项）、e2e 追加 7 项 |
 | — | 2026-10-29 | 新功能 | 侧栏补上「关闭已打开」（收藏不删） | `sidepanel.html` `sidepanel.css` `sidepanel.js` | `sidepanel-close-tabs.test.js`（24 项）、e2e 新 spec（21 项） |
+| — | 2026-10-29 | 性能优化 | 收藏库卡片分页：首屏一页 + 滚到底续画 | `library.js` `library.html` `library.css` `i18n.js` | `library-load-more.test.js`（30 项）、e2e 新 spec（12 项）、`card-order.test.js` 追加 7 项 |
 
 ---
 
@@ -606,6 +607,8 @@ git config http.sslBackend openssl
 | `sidepanel-render` | 新手引导出现且是模态、骨架屏让位、透明封面隐藏占位砖、坏封面降级后占位回来、三颗按钮不重叠、320/400px 不溢出、三档筛选 | 18 |
 | `save-current-page` | 真点「＋」→ 后台抓 og:title/og:image/description → 写 storage → 侧栏出卡片且封面解码成功 → 按钮变已收藏 → 重开仍在 | 16 |
 | `library-actions` | 卡片网格布局无重叠不溢出、搜索命中/落空/清空、Ctrl+点击开新标签、普通点击当前页跳转、标已读写回存储且不误伤其它条目 | 18 |
+| `sidepanel-close-tabs` | 侧栏「关闭已打开」：只关当前项目里开着的标签页、确认框写清项目名与数量、取消时一个都不关、收藏一条不删 | 21 |
+| `library-paging` | 首屏只铺 48 张、页脚文案与可见性、**滚到底自动续页**、按钮兜底补到全部、切筛选回到第一页、控制台干净 | 12 |
 
 **踩到的坑（都会反复咬人，记下来）**
 
@@ -634,10 +637,92 @@ git config http.sslBackend openssl
 
 **验证**
 
-- `node scripts/test-e2e.js` → 4/4 spec 通过，79 秒（单 spec 3~33 秒）。
-- `node scripts/test-all.js` → 70/70 文件通过，53 秒（升级到 jsdom 30 后无回归）。
+- `node scripts/test-e2e.js` → 6/6 spec 通过，约 105 秒（单 spec 3~33 秒）。
+- `node scripts/test-all.js` → 74/74 文件通过，53 秒（升级到 jsdom 30 后无回归）。
 - 反证：把 `sidepanel.css` 里 `.thumb-img ~ .thumb-placeholder{display:none}` 删掉，
   `sidepanel-render` 立刻在「透明封面隐藏占位砖」一条上报红，其它断言不受影响。
+
+---
+
+## 未发布 — 收藏库卡片分页（2026-10-29）
+
+**来源**：待办里躺着一条「P2：卡片视图虚拟滚动或『加载更多』——首屏从 700 张降到视口规模，5,000 条仍流畅」。
+
+**根因**：1.72.0 把首屏渲染切成「同步 48 张 + `requestIdleCallback` 续画」，解决的是
+「一次 `render()` 长时间占住主线程」，**但最终节点数一个没少**：700 条仍是 700 张卡片，
+`#cardGrid` 下约 1.8 万个节点（100 条实测 2600 个，线性放大）。于是有三处代价一直在付：
+
+1. 每次数据变化（标已读、改标题、同步拉回一批）都要把全部卡片 `updateCard()` 走一遍，
+   再让浏览器为整棵子树重算样式；
+2. `content-visibility: auto` 只省了屏外卡片的布局与绘制，节点本身、事件监听、
+   每张卡的项目下拉仍然占着内存；
+3. 分批续画期间滚动条一路变长，往下滚一截、列表又长一截。
+
+**为什么不选「虚拟滚动」**：这个列表同时有拖拽排序（`enableReorder` 靠真实 DOM 位置拍
+布局快照）、多选（`selectedIds` 与卡片 DOM 双向同步）、入场动画和 `content-visibility`。
+虚拟滚动要把这三套全部改成「按索引投影」，动的是交互模型而不只是渲染，风险远大于收益。
+**分页 + 滚到底续画**能拿到同样的首屏收益（首屏固定 48 张），且保持「一张卡片 = 一条收藏」
+这个已经被测试钉死的模型。
+
+**改法**（`library.js` 为主）：
+
+1. 新增三个状态：`visibleItems`（当前筛选 + 排序后的**完整**结果）、`renderLimit`（允许铺多少张）、
+   `visibleScopeKey`（项目 + 搜索词 + 阅读筛选 + 排序 + 搜索范围的签名）。
+2. `renderCards()` 画到 `min(renderLimit, visible.length)` 就停；`renderCardsView()` 裁卡片时
+   除了「不在结果里」，**还要把索引 ≥ `renderLimit` 的一并卸掉**——否则用户翻三页再切项目，
+   前两页的节点会一直挂在 DOM 里，分页就白做了。
+3. 签名变了（换项目 / 搜索 / 筛选 / 排序 / 搜索范围）→ `renderLimit` 打回第一页；
+   只是数据变了（标已读、改标题、另一台设备同步过来）→ **保留用户已经翻到的位置**，
+   否则每点一次已读就弹回顶部。
+4. 页脚 `#loadMore`：`IntersectionObserver`（`rootMargin: 400px`）在滚到附近时自动续一页，
+   按钮是键盘用户和「没有 `IntersectionObserver`」环境的兜底。
+5. **所有「按可见条目算」的口径统一到 `visibleItems`**：`updateSelectionUI()`、全选、
+   `selectedItemsInViewOrder()`、`commitCardOrder()` 的锚点。这是本次最容易踩的坑（见下）。
+6. 定位：`renderCardsView()` 里若 `initialLocateItemId` 在更靠后的页，先把 `renderLimit`
+   撑到它所在的位置；`chrome.storage.onChanged` 的 `CURRENT_ITEM_KEY` 分支走同一个
+   `revealItem()`——侧栏点开一篇文章时，全屏这边要能先铺出那一段再高亮 + 滚过去。
+
+**踩到的坑**
+
+1. **拖拽锚点不能读 DOM**。`commitCardOrder()` 原来拿 `grid.querySelectorAll(".card")` 算
+   「插到谁前面」。分页之后 DOM 里只有一页，拖到最后一个可见位置时 `anchorId` 找不到人 →
+   当成「排到最后」，一篇本来在前 50 名的文章被扔到第 120 位。
+   反证跑过：改回读 DOM，`card-order.test.js` 立刻 3 条红（末尾变成 `bulk-0`、位置记成第 120 位）。
+2. **「全选」的分母**。`grid.children.length` 在分页后等于「一页」，
+   `selectedIds.size >= grid.children.length` 一进入多选就成立，按钮文字永远停在「取消全选」。
+   改成按 `visibleItems` 的条数与 `every()` 判断；没铺出来的条目只记 id，
+   等翻到它们时 `createCard()` 会照 `selectedIds` 补上勾选态。
+3. **`hidden` 对 `display:flex` 无效**。`.load-more` 自己写了 `display:flex`，浏览器给
+   `[hidden]` 的 `display:none` 被覆盖：jsdom 里 `hidden === true` 断言全绿，屏幕上却一直挂着
+   一颗「加载更多」。补 `.load-more[hidden]{display:none}`，并让 e2e 用 `isHidden()` 兜住。
+4. **续画起点不能固定从 0 开始**。`loadMoreCards()` 从 `cardMap.size` 接着往下画
+   （`grid.children.length === cardMap.size` 不成立时退回 0 兜底），否则每翻一页都要把前面
+   已经画好的卡片重新 `updateCard()` 一遍，翻到第 10 页就是 10 倍的无效工作。
+5. **`bench-700.js` 的计时钩子会失效**。它挂在「最后一批 = `visible.length`」上，分页后永远等不到，
+   每次 run 白等 30 秒超时。改成钩 `render()` 量首屏，再单独把 `renderLimit` 撑到全量量一次
+   `fullRenderMs` —— 两个数字分开看，才知道「首屏快了多少、整库铺开的底价是多少」。
+6. **从「已读」切回「未读」不能停在第三页**。第一版只在签名变化时重置，但没重置「已经渲染的卡片」，
+   切回去看到的是空白 + 页脚（其实第一页有内容）。所以重置 `renderLimit` 之后必须让
+   `renderCardsView()` 重新从头铺（它本来就是从 0 开始，靠 `cardMap` 复用）。
+
+**文件**：`library.js`（渲染 / 分页 / 全选 / 拖拽锚点 / 定位）、`library.html`（`#loadMore`）、
+`library.css`（`.load-more*`）、`i18n.js`（`loadMore` / `loadMoreProgress`，中英）、
+`tests/library-load-more.test.js`（新增）、`tests/e2e/library-paging.spec.js`（新增）、
+`tests/card-order.test.js`（⑧ 改成分页口径 + ⑧b 新用例）、`tests/bench-700.js`（计时口径）。
+
+**验证**
+
+- `node scripts/test-all.js` → 74/74 文件通过，53 秒。
+- `node scripts/test-e2e.js` → 6/6 spec 通过，106 秒；新增 `library-paging` 12 条。
+- 三条反证（都实测报红）：
+  - 去掉 `renderCards()` 里的截断 → `library-load-more.test.js` 9 条失败；
+  - 拖拽锚点改回读 DOM → `card-order.test.js` 3 条失败；
+  - 删掉 `.load-more[hidden]` 的样式 → `library-paging` 卡在「铺满后页脚收起」超时。
+- 真浏览器（130 条）：首屏 48 张 → 滚到底自动到 96 张 → 点按钮补到 130 张、页脚收起 →
+  切「已读」清空 → 切回「未读」回到 48 张。
+- `node tests/bench-700.js 700`（jsdom，只看倍率、别横向外推）：卡片视图
+  `firstRenderMs` 87.7 / `fullRenderMs` 3465.2；DOM 节点 700 张 = 18,200 个，
+  首屏这一页 48 张 ≈ 1,250 个。
 
 ---
 
@@ -646,5 +731,4 @@ git config http.sslBackend openssl
 | 项 | 说明 |
 |---|---|
 | P1：列表 / 详情分离 + 单条写单条 | `laterOnItems` 只留索引字段，摘要与封面按 id 分键；单键 345KB → ~80KB。需写数据迁移与老导出文件兼容 |
-| P2：卡片视图虚拟滚动或「加载更多」 | 首屏从 700 张降到视口规模，5,000 条仍流畅 |
 | 同站点同标题去重 | 若「标题消失」实为重新打开后 Alt+1 生成重复条目，可加去重（需具体站点复现） |

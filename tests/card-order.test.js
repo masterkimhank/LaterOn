@@ -328,7 +328,7 @@ async function dragCard({ window, grid, tick }, fromId, index) {
   }
 
   // ── ⑧ 千条收藏：第一批同步，其余空闲时补齐 ──
-  console.log("\n── ⑧ 大列表分批渲染 ──");
+  console.log("\n── ⑧ 大列表分页渲染 ──");
   {
     const many = Array.from({ length: 1000 }, (_, index) => item(`bulk-${index}`, 1000 - index));
     const app = await boot({ items: many, holdIdle: true });
@@ -337,8 +337,35 @@ async function dragCard({ window, grid, tick }, fromId, index) {
       `${app.grid.querySelectorAll(".card").length} 张`);
     check("计数立即显示完整的 1000 篇", /1000 篇网页/.test(app.document.querySelector("#countText")?.textContent || ""));
     app.runIdle();
-    check("空闲批次最终补齐全部卡片", app.grid.querySelectorAll(".card").length === 1000,
+    // 以前是「分批画，最终全画出来」；现在是真正的分页：空闲批次画完这一页就停。
+    check("空闲批次不会把剩下的 952 张也铺出来（那是分页，不是延期）",
+      app.grid.querySelectorAll(".card").length === 48,
       `${app.grid.querySelectorAll(".card").length} 张`);
+    const footer = app.document.querySelector("#loadMore");
+    check("底部出现「加载更多」，写明还剩多少",
+      footer.hidden === false && footer.querySelector("button").textContent === "加载更多（还有 952 篇）",
+      footer.querySelector("button").textContent);
+    footer.querySelector("button").dispatchEvent(new app.window.MouseEvent("click", { bubbles: true, cancelable: true }));
+    await app.tick(40);
+    check("点一次续一页 → 96 张", app.grid.querySelectorAll(".card").length === 96,
+      `${app.grid.querySelectorAll(".card").length} 张`);
+  }
+
+  // ── ⑧b 分页之后「拖到这一页末尾」不等于「拖到全部条目的最后」 ──
+  // 这是分页带出来的新坑：锚点如果还按 DOM 算（grid 里只有一页），
+  // 拖到最后一个可见位置时 anchorId 找不到人 → 当成「排到最后」，
+  // 一篇本来在前 50 名的文章会被扔进第 1000 篇的位置。锚点必须按完整结果数组算。
+  {
+    const many = Array.from({ length: 120 }, (_, index) => item(`bulk-${index}`, 120 - index));
+    const app = await boot({ items: many });
+    check("落在第一页", app.grid.querySelectorAll(".card").length === 48, `${app.grid.querySelectorAll(".card").length} 张`);
+    // others[48] 不存在 → 落到最后一张已渲染卡片的右半边（= 这一页的末尾）。
+    await dragCard(app, "bulk-0", 48);
+    const saved = app.store.laterOnOrder.unfiled || [];
+    check("顺序确实存下来了", saved.length === 120, `${saved.length} 条`);
+    check("没有被扔到全部条目的最后（末尾仍是 bulk-119）", saved[saved.length - 1] === "bulk-119", saved[saved.length - 1]);
+    check("仍然停在前一页的范围里（不是第 120 名）", saved.indexOf("bulk-0") < 60, `第 ${saved.indexOf("bulk-0") + 1} 位`);
+    check("屏幕上看得到它", !!app.grid.querySelector('.card[data-id="bulk-0"]'));
   }
 
   // ── ⑨ 样式与选项 ──
