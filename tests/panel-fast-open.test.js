@@ -327,8 +327,12 @@ function boot({ store, pendingGet = false, cache = null, bootStartOffsetMs = 0, 
   check("缩略图是定位容器", /\.thumb\s*\{[^}]*position:\s*relative/.test(css));
   check("占位绝对定位铺满（不再参与卡片高度计算）",
     /\.thumb-placeholder\s*\{[^}]*position:\s*absolute;[^}]*inset:\s*0/.test(css));
-  check("真实封面盖在占位之上（z-index，否则被占位挡住）",
-    /\.thumb\s+\.thumb-img\s*\{[^}]*z-index:\s*1/.test(css));
+  // 有封面时占位必须整块隐藏，而不是盖一层：透明 PNG / SVG 封面若只是压在橙色 Logo
+  // 砖上，会透出底下的渐变和 Logo，看着像封面坏了。
+  check("有封面时占位被隐藏（相邻兄弟选择器，占位在封面后面）",
+    /\.thumb-img\s*~\s*\.thumb-placeholder\s*\{[^}]*display:\s*none/.test(css));
+  check("封面不再靠 z-index 叠在占位上（占位已经隐藏，不需要叠层）",
+    !/\.thumb\s+\.thumb-img\s*\{[^}]*z-index/.test(css));
 
   check("数据到了：骨架屏撤掉", !envG.document.querySelector("#bootSkeleton"));
   check("数据到了：.booting 标记去掉（真界面露面）", !envG.document.body.classList.contains("booting"));

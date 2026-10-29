@@ -69,8 +69,11 @@ main { padding:14px 13px 30px; }
 .thumb img { width:100%; height:100%; object-fit:cover; }
 /* 没抓到封面时的兜底：和完整界面一样铺满显示 LaterOn 的 Logo 砖，而不是一个箭头。 */
 .thumb-placeholder { position:absolute; inset:0; display:grid; place-items:center; background:linear-gradient(140deg,#ff7a45,#ff5c35); }
-/* 真实封面：盖在占位之上（它在 DOM 里排在占位前面，不给 z-index 会被占位挡住）。 */
-.thumb .thumb-img { position:absolute; inset:0; z-index:1; }
+/* 有真实封面就把占位整块隐藏，而不是叠一层盖住：透明 PNG / SVG 封面盖在橙色 Logo 砖
+   上会透出底下的渐变和 Logo。封面在 DOM 里排在占位前面（applyThumb 用 prepend 插入），
+   所以用相邻兄弟选择器隐藏它；坏图降级失败被移除后，占位自动恢复。 */
+.thumb-img ~ .thumb-placeholder { display:none; }
+.thumb .thumb-img { position:absolute; inset:0; }
 .thumb-logo { display:block; width:100%; height:100%; object-fit:cover; }
 .thumb-placeholder .thumb-logo { border-radius: 0; }
 .thumb-placeholder .thumb-logo { transform: scale(1.12); }

@@ -1348,7 +1348,9 @@ async function saveCovers(next) {
 function applyThumb(article, item) {
   const thumb = article.querySelector(".thumb");
   if (!thumb) return;
-  // 占位（LaterOn Logo）是模板自带的，封面图插在它上面盖住；没有封面就只留占位。
+  // 占位（LaterOn Logo）是模板自带的。封面必须插在占位「前面」——CSS 用
+  // `.thumb-img ~ .thumb-placeholder` 把占位隐藏掉；透明封面若只是盖在占位上，
+  // 会透出底下的橙色渐变和 Logo。
   const current = thumb.querySelector("img.thumb-img");
   const src = resolveImage(item);
   if (src) {
@@ -1365,7 +1367,7 @@ function applyThumb(article, item) {
     image.addEventListener("error", () => {
       const fallback = nextCoverFallback(image.src);
       if (fallback) image.src = fallback;
-      // 降级链走完仍拿不到图：移掉坏图，露出底下的 Logo 占位。
+      // 降级链走完仍拿不到图：移掉坏图，露出的 Logo 占位（CSS 里被隐藏的那块）恢复。
       else image.remove();
     });
     if (current) current.replaceWith(image);
