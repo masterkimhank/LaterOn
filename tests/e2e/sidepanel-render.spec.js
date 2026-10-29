@@ -36,6 +36,7 @@ const item = (patch) => ({
   image: patch.image || "",
   favicon: patch.favicon || "",
   titleAtSave: patch.titleAtSave || "",
+  projectId: patch.projectId ?? null,
 });
 
 (async () => {
@@ -45,19 +46,18 @@ const item = (patch) => ({
 
   try {
     const png = `${site.origin}/cover-transparent.png`;
-    await setStorage(api, {
-      laterOnItems: [
-        item({ id: "id-cover", title: "有封面的文章", url: `${site.origin}/a.html`, image: png, favicon: png }),
-        item({
-          id: "id-broken",
-          title: "封面加载失败的网站",
-          url: `${site.origin}/b.html`,
-          image: `${site.origin}/cover-broken.png`,
-          favicon: png,
-        }),
-        item({ id: "id-noimg", title: "根本没有封面的网站", url: `${site.origin}/c.html`, status: "done" }),
-      ],
-    });
+    const seedItems = [
+      item({ id: "id-cover", title: "有封面的文章", url: `${site.origin}/a.html`, image: png, favicon: png }),
+      item({
+        id: "id-broken",
+        title: "封面加载失败的网站",
+        url: `${site.origin}/b.html`,
+        image: `${site.origin}/cover-broken.png`,
+        favicon: png,
+      }),
+      item({ id: "id-noimg", title: "根本没有封面的网站", url: `${site.origin}/c.html`, status: "done" }),
+    ];
+    await setStorage(api, { laterOnItems: seedItems });
 
     // onboarding:"keep" —— 首启引导这一轮不跳过，先验证它自己的行为。
     const page = await openPage(api, "sidepanel.html", { viewport: WIDE, onboarding: "keep" });
@@ -228,7 +228,58 @@ const item = (patch) => ({
     await waitFor(() => countOf().then((n) => n === 3), { message: "「全部」回到 3 条" });
     c.check("「全部」恢复到全部条目", (await countOf()) === 3);
 
-    // ── 7. 页面自身不该报错 ─────────────────────────────
+    // ── 7. 搜索范围开关：真的能点、真的收窄 ──────────────
+    // 上面的数据全在「等待整理」里，分不出范围；补一条归到项目里的，
+    // 让「项目筛选」和「范围开关」这对容易互相干扰的控件在真浏览器里过一遍。
+    await setStorage(api, {
+      laterOnItems: [
+        ...seedItems,
+        item({ id: "id-project", title: "项目里的封面文章", url: `${site.origin}/d.html`, projectId: "proj-1" }),
+      ],
+      laterOnProjects: [{ id: "proj-1", name: "技术", createdAt: Date.now() }],
+    });
+    await waitFor(() => page.locator(".project-filter").count().then((n) => n >= 1), { message: "项目筛选条出现" });
+
+    await page.locator("#searchInput").fill("封面");
+    // 4 条 = 原有 3 条（都在等待整理）+ 新加的项目条目。等 4 条而不是 3 条，
+    // 否则新数据还没到时旧状态就是 3 条，等于没等。
+    await waitFor(() => countOf().then((n) => n === 4), { message: "全局搜索命中 4 条" });
+    c.check("默认范围内搜索跨项目（原行为没退化）", (await countOf()) === 4, `${await countOf()} 条`);
+
+    // 点不动会直接超时，等于顺带验证了开关没被别的元素盖住。
+    await page.locator('.scope-option[data-scope="unfiled"]').click();
+    await waitFor(() => countOf().then((n) => n === 3), { message: "收窄到等待整理后剩 3 条" });
+    const scopedTitles = await titles();
+    c.check(
+      "拨到「等待整理」后，项目里那条不再出现",
+      !scopedTitles.some((t) => t.includes("项目里的封面")),
+      scopedTitles.join(",")
+    );
+    c.check(
+      "开关高亮跟着切",
+      (await page.locator(".scope-option.active").getAttribute("data-scope")) === "unfiled"
+    );
+    c.check("搜索框加上了收窄描边", (await page.locator("#searchBox").getAttribute("class")).includes("is-scoped"));
+
+    // 搜索框里多了两个按钮，最窄那一档更要盯住溢出。
+    await page.setViewportSize(NARROW);
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    const narrow = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+      inputWidth: Math.round(document.querySelector("#searchInput").getBoundingClientRect().width),
+      scopeRight: Math.round(document.querySelector(".search-scope").getBoundingClientRect().right),
+      clientRight: document.documentElement.clientWidth,
+    }));
+    c.check("320px 下加了范围开关也不溢出", narrow.scrollWidth <= narrow.clientWidth + 1, JSON.stringify(narrow));
+    c.check("320px 下输入框仍然可用（没被开关挤没）", narrow.inputWidth >= 100, `${narrow.inputWidth}px`);
+
+    await page.locator("#searchInput").fill("");
+    await page.setViewportSize(WIDE);
+    // 清空搜索后回到「当前项目」的列表 —— 侧栏默认停在「等待整理」，所以是 3 条。
+    await waitFor(() => countOf().then((n) => n === 3), { message: "清空搜索后回到等待整理的 3 条" });
+    c.check("清空搜索后回到当前项目", (await countOf()) === 3, `${await countOf()} 条`);
+    // ── 8. 页面自身不该报错 ─────────────────────────────
     const fatal = api.consoleErrors.filter((line) => !/favicon|cover-broken|net::ERR|ERR_/i.test(line));
     c.check("控制台没有意外报错", fatal.length === 0, fatal.slice(0, 3).join(" | ") || "干净");
 

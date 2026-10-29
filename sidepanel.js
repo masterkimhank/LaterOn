@@ -46,6 +46,9 @@ let archivedProjectIds = new Set();
 let currentItem = null;
 let filter = DEFAULT_FILTER;
 let query = "";
+// 搜索范围：「all」= 全局搜索（默认，和完整界面同一个规矩）；「unfiled」= 只搜等待整理。
+// 不做持久化 —— 它是一个临时的观察角度，不是设置项；关掉侧栏就该回到默认档。
+let searchScope = "all";
 let activeProject = "unfiled";
 let autoMarkRead = true;   // 点开文章是否自动标记为「在读」（与设置页同步）
 let closeTabsOnDelete = false; // 删除收藏时是否顺带关掉还开着的同一网页（设置页里开，默认关）
@@ -121,6 +124,8 @@ const empty = document.querySelector("#emptyState");
 const template = document.querySelector("#itemTemplate");
 const saveButton = document.querySelector("#saveCurrent");
 const status = document.querySelector("#status");
+const searchBox = document.querySelector("#searchBox");
+const searchInput = document.querySelector("#searchInput");
 
 // 先让浏览器完成一帧绘制骨架屏，再启动数据读取和真实列表渲染。
 // 如果这里直接同步 init()，首屏缓存很快时骨架会在第一次 paint 前就被移除，
@@ -280,6 +285,9 @@ async function init() {
   // 不等待它，避免一次冷 storage 读取把侧栏首屏拖到几秒之后。
   languagePromise.then(() => {
     window.LaterOnI18n?.applyStatic();
+    // applyStatic 会把输入框占位文字改回默认档那一句；范围若已经拨到「等待整理」
+    // （比如用户先拨开关、语言才读完），这里按当前状态纠回来。
+    syncSearchScopeUI();
     if (currentItem) syncSaveButtonState(!!currentItemId);
     if (sidePanelReady || cacheHit) {
       render();
@@ -403,6 +411,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
   if (area === "local" && changes[ACTIVE_PROJECT_KEY]) {
     activeProject = normalizeProject(changes[ACTIVE_PROJECT_KEY].newValue);
+    // 另一个视图换了项目，这边跟着换；「只搜等待整理」的范围同样收回默认档，
+    // 否则新项目里一个结果都没有，看起来像这个项目是空的。
+    resetSearchScope();
     renderProjectFilters();
     render();
   }
@@ -642,7 +653,60 @@ document.querySelector("#openLibrary").addEventListener("click", async () => {
     else status.textContent = tr("libraryOpenFailed");
   }
 });
-document.querySelector("#searchInput").addEventListener("input", (event) => {
+// ── 搜索范围（全部 / 等待整理）──────────────────────────────
+// 和完整界面用同一套语义：默认「全部」= 全局搜索（在某个项目里搜一个明明存在的标题
+// 不会一无所获，否则人会以为这篇收藏丢了）；拨到「等待整理」就只搜还没归类的条目。
+// 区别只在于侧栏没有 ⌘K 提示、空间更窄，所以按钮做得更小。
+const SEARCH_SCOPES = new Set(["all", "unfiled"]);
+
+// 当前这次搜索是否只覆盖「等待整理」。没有搜索词时范围无所谓，一律 false。
+function searchingInboxOnly() {
+  return !!query && searchScope === "unfiled";
+}
+
+// 把开关外观、输入框占位文字、搜索框描边同步成当前范围。
+function syncSearchScopeUI() {
+  const scoped = searchScope === "unfiled";
+  searchBox?.classList.toggle("is-scoped", scoped);
+  document.querySelectorAll(".scope-option").forEach((button) => {
+    const on = button.dataset.scope === searchScope;
+    button.classList.toggle("active", on);
+    button.setAttribute("aria-pressed", String(on));
+  });
+  // 占位文字跟着范围走：范围一收窄，输入框自己就说清楚在搜哪儿。
+  if (searchInput) searchInput.placeholder = tr(scoped ? "searchInboxPlaceholder" : "search");
+}
+
+function setSearchScope(value) {
+  const next = SEARCH_SCOPES.has(value) ? value : "all";
+  if (next === searchScope) return;
+  searchScope = next;
+  syncSearchScopeUI();
+  render();
+  searchInput?.focus();
+}
+
+// 切换项目时把范围收回默认档：留着一个「只搜等待整理」的开关去别的项目里搜，
+// 比搜不到东西更容易让人困惑。不触发渲染，调用方本来就会重画。
+function resetSearchScope() {
+  if (searchScope === "all") return;
+  searchScope = "all";
+  syncSearchScopeUI();
+}
+
+document.querySelectorAll(".scope-option").forEach((button) => {
+  button.addEventListener("click", () => setSearchScope(button.dataset.scope));
+});
+
+// 这个框原来是个 <label>，点图标和留白都会把光标送进输入框；换成 div 之后
+// 得自己把这条补回来（否则点放大镜没反应，像是坏了）。开关按钮要排除掉，
+// 理由和完整界面一样：点开关顺手把光标塞进搜索框，行为很怪。
+searchBox?.addEventListener("click", (event) => {
+  if (event.target.closest(".scope-option")) return;
+  searchInput?.focus();
+});
+
+searchInput.addEventListener("input", (event) => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => { query = event.target.value.trim().toLowerCase(); render(); }, 120);
 });
@@ -967,6 +1031,26 @@ function hideBootPlaceholder() {
   if (typeof window.LaterOnBoot?.done === "function") window.LaterOnBoot.done();
 }
 
+// 空列表时的说法要和「真的一条收藏都没有」分开：范围拨到「等待整理」还搜不到，
+// 最可能的原因是这篇已经归到别的项目里了 —— 这时候仍然说「还没有添加的网页」，
+// 人会真的以为收藏丢了，转头去别处找。
+function syncEmptyText() {
+  const title = empty.querySelector("h2");
+  const hint = empty.querySelector("p");
+  if (!title || !hint) return;
+  let titleKey = "sideEmptyTitle";
+  let hintKey = "sideEmptyHint";
+  if (query) {
+    const inboxOnly = searchingInboxOnly();
+    titleKey = inboxOnly ? "noInboxMatches" : "noMatches";
+    // 侧栏的「未读 / 已读」在搜索框**下面**，完整界面的那句「切换顶部的阅读状态筛选」
+    // 放在这里会让人往上看。所以侧栏用自己的那句。
+    hintKey = inboxOnly ? "noInboxMatchesHint" : "sideNoMatchesHint";
+  }
+  title.textContent = tr(titleKey);
+  hint.textContent = tr(hintKey);
+}
+
 function render() {
   // 只要画得出东西（秒开缓存也好、真数据也好），骨架屏就完成使命了。
   hideBootPlaceholder();
@@ -975,9 +1059,15 @@ function render() {
     // 不受上面那排项目筛选影响——否则在某个项目里搜一个明明存在的标题会一无所获，
     // 还以为是收藏丢了。「未读 / 已读」那一档仍然生效，它是用户自己拨过去的开关。
     if (archivedProjectIds.has(item.projectId)) return false;
-    const matchesProject = !!query
-      || activeProject === "all"
-      || (activeProject === "unfiled" ? !item.projectId : item.projectId === activeProject);
+    // 搜索默认是全局的（和完整页同一个规矩）：搜索框里有字时一律在「全部收藏」里找，
+    // 不受上面那排项目筛选影响——否则在某个项目里搜一个明明存在的标题会一无所获，
+    // 还以为是收藏丢了。例外是范围开关拨到了「等待整理」：这时搜索本来就是要看子集，
+    // 只收还没归类的条目，跟当前停在哪个项目无关。「未读 / 已读」那一档始终生效，
+    // 它是用户自己拨过去的开关。
+    const matchesProject = query
+      ? (searchingInboxOnly() ? !item.projectId : true)
+      : (activeProject === "all"
+          || (activeProject === "unfiled" ? !item.projectId : item.projectId === activeProject));
     // 「未读」= 还没读完（未读 + 在读）；「已读」= 手动标完成的那批。
     const matchesFilter = filter === "all" || (filter === "done" ? item.status === "done" : item.status !== "done");
     // 「收藏时的原标题」也参与搜索：标题被网站改掉后，用户记住的往往还是当初那一条。
@@ -1004,6 +1094,7 @@ function render() {
     if (!visibleIds.has(id)) { article.remove(); itemMap.delete(id); }
   }
   empty.hidden = visible.length > 0;
+  if (!visible.length) syncEmptyText();
   // 第一批同步画出来（保证「立刻有东西看」），其余交给空闲时段续画。
   renderSlice(visible, 0, token);
   // 每次画完存一份快照进 localStorage，下次打开侧栏先拿它秒开第一屏。
@@ -1198,6 +1289,9 @@ function renderProjectFilters() {
     button.append(name, count);
     button.addEventListener("click", () => {
       activeProject = normalizeProject(choice.id);
+      // 换项目就把搜索范围收回「全部」：带着「只搜等待整理」去别的项目里搜，
+      // 大概率一条都搜不到，而屏幕上没有任何东西解释为什么。
+      resetSearchScope();
       renderProjectFilters();
       render();
       chrome.storage.local.set({ [ACTIVE_PROJECT_KEY]: activeProject });

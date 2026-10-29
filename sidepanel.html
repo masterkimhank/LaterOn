@@ -42,7 +42,7 @@
       .skel-lines { display: grid; gap: 6px; }
       .sk-btn { height: 30px; border-radius: 9px; }
       .sk-thumb-sm { width: 52px; height: 52px; border-radius: 9px; }
-      .sk-search { height: 36px; margin-top: 8px; border-radius: 10px; }
+      .sk-search { height: 43px; margin-top: 8px; border-radius: 10px; }
       .skel-filters { display: flex; align-items: center; gap: 3px; margin: 12px 1px 9px; }
       .sk-pill { width: 40px; height: 22px; border-radius: 99px; }
       .sk-count { width: 30px; height: 10px; margin-left: auto; border-radius: 5px; }
@@ -216,10 +216,19 @@
       </section>
       <p id="status" role="status"></p>
 
-      <label class="search">
-        <svg viewBox="0 0 24 24"><path d="m21 21-4.3-4.3m2.3-5.2a7.5 7.5 0 1 1-15 0 7.5 7.5 0 0 1 15 0Z"/></svg>
-        <input id="searchInput" type="search" data-i18n-placeholder="search" placeholder="搜索网页" autocomplete="off" />
-      </label>
+      <!-- 搜索框自带范围开关：默认「全部」= 全局搜索（在哪个项目里搜都能搜到别处，
+           这样人在某个项目里搜一个明明存在的标题不会一无所获）；拨到「等待整理」
+           就只在这一堆还没归类的条目里找，结果不会跑出这个范围。
+           这里用 div 而不是 label：里面多了两个按钮，label 会把按钮上的点击转发给
+           输入框，点开关会顺手把光标塞进搜索框，行为很怪（完整界面那边踩过同样的坑）。 -->
+      <div class="search" id="searchBox" role="search">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.3-4.3m2.3-5.2a7.5 7.5 0 1 1-15 0 7.5 7.5 0 0 1 15 0Z"/></svg>
+        <input id="searchInput" type="search" data-i18n-placeholder="search" data-i18n-aria-label="search" placeholder="搜索网页" aria-label="搜索网页" autocomplete="off" />
+        <div class="search-scope" role="group" data-i18n-aria-label="searchScopeAria" aria-label="搜索范围">
+          <button type="button" class="scope-option active" data-scope="all" data-i18n="searchScopeAll" aria-pressed="true">全部</button>
+          <button type="button" class="scope-option" data-scope="unfiled" data-i18n="searchScopeInbox" aria-pressed="false">等待整理</button>
+        </div>
+      </div>
 
       <div class="filter-row">
         <div class="filters">

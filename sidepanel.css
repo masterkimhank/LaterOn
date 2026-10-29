@@ -28,8 +28,19 @@ main { padding:14px 13px 30px; }
 #saveCurrent.saved:disabled { opacity:1; cursor:default; }
 #status { min-height:13px; margin:5px 3px 2px; color:var(--accent); font-size:10px; }
 .search { display:flex; align-items:center; margin-top:8px; padding:9px 10px; border:1px solid var(--line); border-radius:10px; background:var(--field); }
-.search svg { width:15px; fill:none; stroke:var(--muted); stroke-linecap:round; stroke-width:1.8; }
-.search input { min-width:0; width:100%; border:0; outline:0; padding:0 7px; background:transparent; color:var(--ink); font-size:11px; }
+.search svg { width:15px; flex:none; fill:none; stroke:var(--muted); stroke-linecap:round; stroke-width:1.8; }
+.search input { min-width:0; flex:1 1 auto; border:0; outline:0; padding:0 7px; background:transparent; color:var(--ink); font-size:11px; }
+/* 范围收窄时给搜索框描一圈橙边：光靠两个小字按钮，人不会注意到「现在搜的是子集」。 */
+.search.is-scoped { border-color:color-mix(in srgb, var(--accent) 45%, transparent); }
+.search-scope { flex:none; display:flex; gap:1px; padding:2px; border-radius:8px; background:var(--btn-soft); }
+.scope-option { border:0; border-radius:6px; padding:3px 6px; background:transparent; color:var(--chip-text); font-size:9.5px; font-weight:700; line-height:1.35; white-space:nowrap; transition:background .15s, color .15s, box-shadow .15s; }
+.scope-option:hover { color:var(--ink); }
+.scope-option:focus-visible { outline:2px solid color-mix(in srgb, var(--accent) 72%, transparent); outline-offset:1px; }
+/* 默认档（全部）选中：浅色底片，安静。 */
+.scope-option.active { background:var(--card); color:var(--ink); box-shadow:0 1px 2px rgba(20,18,14,.14); }
+[data-theme="dark"] .scope-option.active { box-shadow:inset 0 0 0 1px var(--card-line); }
+/* 收窄档（等待整理）选中：实色橙 —— 一眼看出「现在搜的是子集」。 */
+.scope-option.active[data-scope="unfiled"] { background:var(--accent); color:#fff; box-shadow:none; }
 .filter-row { display:flex; align-items:center; justify-content:space-between; margin:12px 1px 9px; }
 .filters { display:flex; gap:3px; }
 .filter { border:0; border-radius:99px; padding:5px 9px; background:transparent; color:var(--chip-text); font-size:10px; }
