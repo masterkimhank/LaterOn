@@ -236,7 +236,19 @@
           <button class="filter" data-filter="done" data-i18n="read">已读</button>
           <button class="filter" data-filter="all" data-i18n="all">全部</button>
         </div>
-        <span id="itemCount"></span>
+        <div class="filter-meta">
+          <span id="itemCount"></span>
+          <!-- 「关闭已打开」：把当前项目里还摊在浏览器里的标签页收干净，收藏一条都不删。
+               只在单个项目（含等待整理）下出现——「全部」不是单个项目，范围说不清。
+               图标按钮而不是文字：320px 一排要放下三个阅读档 + 计数 + 这个，英文界面里
+               计数会写成「1,024 pages」，再塞「关闭已打开」就换行了。 -->
+          <button id="closeProjectTabs" type="button" class="close-tabs" hidden
+            data-i18n-title="closeProjectTabsHint" data-i18n-aria-label="closeProjectTabsHint"
+            title="关闭这个项目里已打开的标签页，收藏不会被删除"
+            aria-label="关闭这个项目里已打开的标签页，收藏不会被删除">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z"/><path d="m9.5 9.5 5 5m0-5-5 5"/></svg>
+          </button>
+        </div>
       </div>
       <div id="projectFilters" class="project-filters" data-i18n-aria-label="projectCategories" aria-label="项目分类"></div>
 

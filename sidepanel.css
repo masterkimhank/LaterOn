@@ -45,7 +45,15 @@ main { padding:14px 13px 30px; }
 .filters { display:flex; gap:3px; }
 .filter { border:0; border-radius:99px; padding:5px 9px; background:transparent; color:var(--chip-text); font-size:10px; }
 .filter.active { background:var(--btn-soft); color:var(--ink); font-weight:700; }
+.filter-meta { display:flex; align-items:center; gap:6px; }
 #itemCount { color:var(--subtle); font-size:10px; }
+/* 「关闭已打开」：和卡片上的编辑/删除同一族的小图标按钮，平时安静，悬停才染橙。
+   自己写了 display 就得自己管 hidden —— 浏览器自带的 [hidden]{display:none} 敌不过
+   作者样式，少了下面那行，按钮在「全部」里也会照常出现（library.css 踩过同一个坑）。 */
+.close-tabs { display:grid; place-items:center; width:22px; height:22px; border:0; border-radius:6px; background:transparent; color:var(--subtle); }
+.close-tabs:hover, .close-tabs:focus-visible { background:var(--accent-soft); color:var(--accent); }
+.close-tabs svg { width:13px; fill:none; stroke:currentColor; stroke-linecap:round; stroke-linejoin:round; stroke-width:1.6; }
+.close-tabs[hidden] { display:none; }
 .project-filters { display:flex; gap:5px; overflow-x:auto; margin:0 -13px 10px; padding:0 13px 3px; scrollbar-width:none; }
 .project-filters::-webkit-scrollbar { display:none; }
 .project-filter { flex:0 0 auto; display:flex; align-items:center; gap:5px; max-width:150px; border:1px solid var(--line); border-radius:8px; padding:6px 8px; background:var(--card); color:var(--chip-text); font-size:9.5px; white-space:nowrap; }

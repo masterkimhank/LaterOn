@@ -52,6 +52,7 @@ let searchScope = "all";
 let activeProject = "unfiled";
 let autoMarkRead = true;   // 点开文章是否自动标记为「在读」（与设置页同步）
 let closeTabsOnDelete = false; // 删除收藏时是否顺带关掉还开着的同一网页（设置页里开，默认关）
+let closeTabsBusy = false;     // 「关闭已打开」正在跑：挡住连点，别弹出两个确认框
 let sortMode = "newest";   // 全屏那边的排序方式（只有 custom 会影响这里的先后顺序）
 let orders = {};           // 用户拖出来的自定义顺序（与全屏共享：{ 范围: [收藏 id] }）
 let covers = {};           // 用户上传的封面：{ 收藏 id: dataURL }（与 COVERS_KEY 对应）
@@ -126,6 +127,7 @@ const saveButton = document.querySelector("#saveCurrent");
 const status = document.querySelector("#status");
 const searchBox = document.querySelector("#searchBox");
 const searchInput = document.querySelector("#searchInput");
+const closeTabsButton = document.querySelector("#closeProjectTabs");
 
 // 先让浏览器完成一帧绘制骨架屏，再启动数据读取和真实列表渲染。
 // 如果这里直接同步 init()，首屏缓存很快时骨架会在第一次 paint 前就被移除，
@@ -711,6 +713,14 @@ searchInput.addEventListener("input", (event) => {
   searchTimer = setTimeout(() => { query = event.target.value.trim().toLowerCase(); render(); }, 120);
 });
 
+// 收尾：把这个项目里还开着的标签页一次性关掉（收藏不动）。
+closeTabsButton.addEventListener("click", () => {
+  // 连点两下不该弹出两个确认框、关两遍；同一个时刻只跑一次。
+  if (closeTabsBusy) return;
+  closeTabsBusy = true;
+  closeTabsForActiveProject().finally(() => { closeTabsBusy = false; });
+});
+
 // 事件委托：整页只挂一个监听器，避免给每张卡片单独绑监听。
 list.addEventListener("click", (event) => {
   const article = event.target.closest(".item");
@@ -1055,9 +1065,7 @@ function render() {
   // 只要画得出东西（秒开缓存也好、真数据也好），骨架屏就完成使命了。
   hideBootPlaceholder();
   const visible = items.filter((item) => {
-    // 搜索是全局的（和全屏页同一个规矩）：搜索框里有字时一律在「全部收藏」里找，
-    // 不受上面那排项目筛选影响——否则在某个项目里搜一个明明存在的标题会一无所获，
-    // 还以为是收藏丢了。「未读 / 已读」那一档仍然生效，它是用户自己拨过去的开关。
+    // 归档项目里的收藏在任何视图下都不出现。
     if (archivedProjectIds.has(item.projectId)) return false;
     // 搜索默认是全局的（和完整页同一个规矩）：搜索框里有字时一律在「全部收藏」里找，
     // 不受上面那排项目筛选影响——否则在某个项目里搜一个明明存在的标题会一无所获，
@@ -1087,6 +1095,7 @@ function render() {
   const token = ++renderToken;
   renderComplete = false;   // 这一轮还没画完，先别拿半张列表的坐标去做定位
   document.querySelector("#itemCount").textContent = tr("cardCount", { n: visible.length });
+  syncCloseTabsButton();
 
   // 已经不在列表里的卡片先撤掉（删掉的收藏要立刻从界面消失）。
   const visibleIds = new Set(visible.map((item) => item.id));
@@ -1327,6 +1336,50 @@ function normalizeProject(projectId) {
   // 「全部项目」只属于全屏图板总览；侧栏没有这个范围，收到 all 或失效项目时
   // 回到「等待整理」，保证始终有一个真实可见的目录处于选中状态。
   return projects.some((project) => project.id === projectId) ? projectId : "unfiled";
+}
+
+// ── 关闭当前项目里已打开的标签页（收藏一条都不删）────────────────
+// 和完整界面同一个场景、同一套规矩：一个专题读完了，浏览器里还摊着十几篇它的标签页，
+// 想一次收干净，又不想把整理好的收藏一起删掉。这边只是把入口搬到侧栏 ——
+// 人正在读某一篇、顺手想收尾的时候，不用特地打开收藏库。
+function activeProjectLabel() {
+  if (activeProject === "unfiled") return tr("inbox");
+  const project = projects.find((entry) => entry.id === activeProject);
+  return project ? project.name : tr("inbox");
+}
+
+function projectScopeItems(projectId) {
+  return projectId === "unfiled"
+    ? items.filter((item) => !item.projectId)
+    : items.filter((item) => item.projectId === projectId);
+}
+
+function syncCloseTabsButton() {
+  // 侧栏不会有「全部项目 / 归档」（normalizeProject 把它们折回「等待整理」了），
+  // 所以这颗按钮平时一直在。两个判断是护栏：以后真把图板总览搬进来，范围说不清时不显示。
+  closeTabsButton.hidden = activeProject === "all" || activeProject === "archive";
+}
+
+async function closeTabsForActiveProject() {
+  const name = activeProjectLabel();
+  const scope = projectScopeItems(activeProject);
+  if (!scope.length) { status.textContent = tr("closeTabsNoItems", { name }); return; }
+  // 先数一遍：一个都没开着就别弹框，直接说一句。数的时候按整条条目传进去，
+  // 网址变了的那几篇要靠「收藏时的原标题」才认得出来。
+  const openTabs = (await globalThis.LaterOnTabs?.matches?.(scope)) || [];
+  if (!openTabs.length) { status.textContent = tr("closeTabsNone", { name }); return; }
+  try { await ensureDialogLoaded(); }
+  catch { status.textContent = tr("dialogLoadFailed"); return; }
+  const confirmed = await window.LaterOnDialog.confirm({
+    title: tr("closeTabsTitle", { name, n: openTabs.length }),
+    // 这句必须说清「收藏不会删」：这个动作的名字里有「关闭」，而它旁边的按钮是「删除」。
+    message: tr("closeTabsMessage"),
+    confirmText: tr("closeTabsConfirm")
+  });
+  if (!confirmed) return;
+  // 关完重新数一遍（closeMatching 内部会重查），所以中途自己关掉的标签页不会被算进去。
+  const closed = (await globalThis.LaterOnTabs?.closeMatching?.(scope)) || 0;
+  status.textContent = closed ? tr("closeTabsDone", { n: closed }) : tr("closeTabsNone", { name });
 }
 
 // 旧收藏只有 read 布尔、没有 status：按 read 推导成三档之一，兼容已有数据。
