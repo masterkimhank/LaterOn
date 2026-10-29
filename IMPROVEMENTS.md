@@ -1,7 +1,7 @@
 # 改进记录（本分支相对上游的工程记录）
 
 - 上游基线：**1.66.1**（提交 `a1a5313`，MIT，作者 yiiiii）
-- 本分支当前：**1.72.1**（fork 基线提交 `5270ebe`）
+- 本分支当前：**1.75.0**（fork 基线提交 `5270ebe`）
 - 与 `CHANGELOG.md` 的分工：CHANGELOG 是**面向使用者**的发布说明（发生什么变化、怎么用）；本文件是**面向维护者**的工程记录，写清「为什么改、根因在哪、动了哪些文件、怎么验证」。
 - 分支用法、提交规范、与上游同步的办法，见 `FORK.md`。
 
@@ -28,10 +28,11 @@
 | 1.74.0 | 2026-10-30 | 发版 | 把 2026-10-29 那批改动合成一版发出去（e2e 基建 / 固定 ID / 侧栏两项 / 分页 / 认人 / 拆分）+ 发版前自查修掉 6 处 | `manifest.json` `scripts/build-release.py` `background.js` `library.js` `sidepanel.js` `tests/*` | `details-safety.test.js`（9 项）、白名单静态校验（2 项） |
 | — | 2026-10-30 | 新功能 | 添加网页时的进度提示（两个界面 + 图标绿点） | `background.js` `library.html` `library.css` `library.js` `sidepanel.html` `sidepanel.css` `sidepanel.js` `i18n.js` | `save-progress.test.js`（56 项） |
 | — | 2026-10-30 | 修 bug + 新功能 | 多选整组拖进项目；关闭标签页分两档、把「不会关闭」的那些单独列出来；多选加「退出多选」且点别处不再清空 | `library.js` `library.html` `library.css` `dialog.js` `dialog.css` `tab-navigation.js` `sidepanel.js` `i18n.js` | `select-group-drag.test.js`（新增，22 项）；`close-tabs-on-delete.test.js`（27 项）、`sidepanel-delete.test.js`、`select-mode.test.js` 改断言 |
+| 1.75.0 | 2026-10-30 | 发版 | 把 2026-10-30 那两批改动合成一版发出去（添加进度提示 + 图标绿点 / 多选整组拖拽 + 关闭标签分两档 + 退出多选） | `manifest.json` `background.js` `library.*` `sidepanel.*` `dialog.*` `tab-navigation.js` `i18n.js` | `save-progress.test.js`（56 项）、`select-group-drag.test.js`（22 项） |
 
 ---
 
-## 未发布 — 添加网页时的进度提示（2026-10-30）
+## 1.75.0 — 添加网页时的进度提示（2026-10-30）
 
 **来源**：使用者反馈「添加网页时只有右上方有提示，没有进度提示，在主界面跟侧边栏加上进度提示，
 可以的话在添加时扩展图标显示绿色小点表示正在工作」。
@@ -113,7 +114,7 @@
 
 ---
 
-## 未发布 — 多选整组拖拽 + 关闭标签分两档（2026-10-30）
+## 1.75.0 — 多选整组拖拽 + 关闭标签分两档（2026-10-30）
 
 **来源**：使用者一次提了四件事——
 「多选以后拖动卡片不会聚拢，然后无法一起拖到项目里面，判断标签聚拢拖动到项目是否容易实现；
@@ -246,7 +247,7 @@ notice: [
 
 ---
 
-## 未发布 — 固定扩展 ID（2026-10-29）
+## 1.74.0 — 固定扩展 ID（2026-10-29）
 
 **来源**：分析 `NHZEX/LaterOn-browser-ext` 时发现对方在 manifest 里带 `key`，对比之下我们这里是个空白。
 
@@ -329,7 +330,7 @@ notice: [
 
 ---
 
-## 未发布 — 侧栏搜索范围开关（2026-10-29）
+## 1.74.0 — 侧栏搜索范围开关（2026-10-29）
 
 **来源**：1.67.0 只给完整界面加了「全部 / 等待整理」范围开关，侧栏一直缺（记在待办里）。
 
@@ -404,7 +405,7 @@ e2e 里 `page.locator('.scope-option[data-scope="unfiled"]').click()` 被遮挡�
 
 ---
 
-## 未发布 — 侧栏「关闭已打开」（2026-10-29）
+## 1.74.0 — 侧栏「关闭已打开」（2026-10-29）
 
 **来源**：1.69.0 给完整界面做了「关闭已打开」（`library.js` 的 `closeProjectTabs`），
 侧栏一直缺（记在待办里）。

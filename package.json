@@ -1,6 +1,6 @@
 {
   "name": "lateron",
-  "version": "1.74.0",
+  "version": "1.75.0",
   "private": true,
   "description": "LaterOn 的「开发期」清单：只放测试依赖和命令。扩展本身无构建，加载扩展不读这个文件，打包白名单也不含它。",
   "scripts": {

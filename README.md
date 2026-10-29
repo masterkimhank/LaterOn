@@ -13,7 +13,7 @@
 
 ![LaterOn 全屏项目管理与浏览器侧栏](docs/lateron-overview.webp)
 
-<p align="center"><sub>当前版本 <strong>1.74.0</strong>（二次开发版）· <a href="https://github.com/masterkimhank/LaterOn/releases/latest">下载最新版</a> · <a href="CHANGELOG.md">改动记录</a></sub></p>
+<p align="center"><sub>当前版本 <strong>1.75.0</strong>（二次开发版）· <a href="https://github.com/masterkimhank/LaterOn/releases/latest">下载最新版</a> · <a href="CHANGELOG.md">改动记录</a></sub></p>
 
 ## LaterOn 能做什么
 
@@ -69,7 +69,7 @@ LaterOn 目前通过开发者模式安装，主体功能支持 Chrome / Edge 121
 
 ## 相对上游版本的改动
 
-本仓库基于上游 `1.66.1` 继续开发，目前已到 `1.74.0`：
+本仓库基于上游 `1.66.1` 继续开发，目前已到 `1.75.0`：
 
 | 版本 | 改动 |
 | --- | --- |
@@ -82,6 +82,7 @@ LaterOn 目前通过开发者模式安装，主体功能支持 Chrome / Edge 121
 | 1.72.1 | 修掉 1.72.0 优化自身引入的五个问题（高亮丢失、下拉重建、滚动条抖动等） |
 | 1.73.0 | 多设备同步（WebDAV，按记录合并、删除可同步、并发写不互相覆盖）；侧栏透明封面不再透出 Logo；修打包脚本漏检子目录垃圾文件 |
 | 1.74.0 | 固定扩展 ID（换文件夹不再丢数据，升级前需先导出）；同一篇文章的两种网址不再存成两条；收藏库卡片分页；侧栏补上「全部 / 等待整理」搜索范围开关与「关闭已打开」；摘要与封面改存到详情表（700 条时列表 400KB → 191KB）；加入真浏览器端到端测试 |
+| 1.75.0 | 添加网页时两个界面都显示进度（侧栏一行状态、完整界面顶部细进度条 + 右下角胶囊），图标右下角亮绿点；多选后可把这一批「拎成一叠」直接拖进项目；删除时把「会关掉的标签页」列成清单并分两档，「仅标题相同」的那档默认不关；多选加了「退出多选」，点别处、滚页面不再清空已选 |
 
 每条改动的现象与原因见 [CHANGELOG.md](CHANGELOG.md)；根因、动了哪些文件、怎么验证见 [IMPROVEMENTS.md](IMPROVEMENTS.md)。
 
