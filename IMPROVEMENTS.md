@@ -27,6 +27,7 @@
 | — | 2026-10-29 | 性能优化 | 收藏数据分两处存（索引 + 详情表），写一条不再重写整表 | `item-store.js` `background.js` `library.js` `sidepanel.js` `settings.js` `webdav-sync.js` | `item-store.test.js`（36 项） |
 | 1.74.0 | 2026-10-30 | 发版 | 把 2026-10-29 那批改动合成一版发出去（e2e 基建 / 固定 ID / 侧栏两项 / 分页 / 认人 / 拆分）+ 发版前自查修掉 6 处 | `manifest.json` `scripts/build-release.py` `background.js` `library.js` `sidepanel.js` `tests/*` | `details-safety.test.js`（9 项）、白名单静态校验（2 项） |
 | — | 2026-10-30 | 新功能 | 添加网页时的进度提示（两个界面 + 图标绿点） | `background.js` `library.html` `library.css` `library.js` `sidepanel.html` `sidepanel.css` `sidepanel.js` `i18n.js` | `save-progress.test.js`（56 项） |
+| — | 2026-10-30 | 修 bug + 新功能 | 多选整组拖进项目；关闭标签页分两档、把「不会关闭」的那些单独列出来；多选加「退出多选」且点别处不再清空 | `library.js` `library.html` `library.css` `dialog.js` `dialog.css` `tab-navigation.js` `sidepanel.js` `i18n.js` | `select-group-drag.test.js`（新增，22 项）；`close-tabs-on-delete.test.js`（27 项）、`sidepanel-delete.test.js`、`select-mode.test.js` 改断言 |
 
 ---
 
@@ -109,6 +110,139 @@
 - **不把进度抽成共享模块**：两个页面要画的结构不一样（一行文字 vs 进度条 + 胶囊），
   真正共享的只有文案拼接那十几行。抽成新文件反而要再动一次打包白名单——
   而白名单漏文件正是 1.74.0 刚踩过的坑。
+
+---
+
+## 未发布 — 多选整组拖拽 + 关闭标签分两档（2026-10-30）
+
+**来源**：使用者一次提了四件事——
+「多选以后拖动卡片不会聚拢，然后无法一起拖到项目里面，判断标签聚拢拖动到项目是否容易实现；
+如果删除标签时，关闭的标签与所选标签不一致，在关闭弹窗把不需要关闭标签的页面单独显示出来；
+进入多选模式后，在选择的右边增加一个退出多选的按钮，点击其他地方不会退出多选，页面可以正常下滑」。
+
+第一条附带一个判断请求（「是否容易实现」），结论是**容易**，见下面「为什么这个不难」。
+
+### 根因
+
+**① 多选拖不动一组，是 `dragstart` 主动把多选关掉了。**
+`enableReorder()` 的 dragstart 第一行就是 `if (selectMode) setSelectMode(false)`——本意是
+「拖拽是另一种操作，别留着旧勾选」，代价是多选一旦成立就再也拖不动整体。即使跳过这一步，
+后面还有两道各自只认一张：`dataTransfer.setData("text/plain", id)` 只放被拖那张的 id，
+`enableDropTarget()` 的 drop 也只 `getData("text/plain")` 然后 `updateItem(itemId, …)`。
+
+**② 「关闭的标签和所选的不一致」，是两档匹配混在一个数组里返回。**
+`tab-navigation.js` 的 `matches()` 有两道判据：网址相同（走 `normalize`，跨 www / utm 算同一篇），
+以及「网址对不上但同站点同标题」（有些站点每次打开的网址都会变，只能靠标题认）。
+这两档性质完全不同——前者确定是同一篇，后者是猜的——但 `matches()` 把它们**拼成一个数组**返回，
+于是 `countOpenTabs()` 数的是两者之和、`closeMatching()` 关的也是两者之和。
+日报类站点每天标题都一样：删掉选中的 A，会连带关掉同站点另一篇同名文章，
+而确认框只写「会关掉 3 个」，用户数不出是哪三个，只觉得「关错了」。
+
+**③ 退出多选只有一条隐式规则。** 没有任何按钮，全靠 `document` 上的 `pointerdown` 捕获：
+点在 `.card / #bulkBar / #selectMode` 之外就退出。挑卡片本来就要点来点去（滚下去找、
+点开看看、换个筛选），一次误触就把整批勾选清空，而且没有任何提示。
+
+**④ 那条 `pointerdown` 连滚动都算。** 滚动从注册在捕获阶段——手指/光标在空白处按下开始滚，就已经
+`setSelectMode(false)` + `clearSelection()` 了。用户感受到的是「一滑就没了」。
+
+### 改法
+
+**分档，而不是加一个开关。** `tab-navigation.js` 新增 `inspect(pages)`，返回
+`{ exact, fuzzy }`：
+
+- `exact`：`comparable(url)` 相等 —— 删收藏时一起关；
+- `fuzzy`：同站点 + 同标题 —— **列出来给人看，默认不关**。
+
+`matches()` 保留（= 两档合并），`closeMatching()` 改成 `closeTabs(await matches())`，
+另外新增 `closeTabs(tabs)` 直接按标签页数组关。删除路径改用 `inspect()` + `closeTabs(exact)`：
+「数」和「关」都只看 exact，两者永远一致。
+
+**弹窗里分两组列出来。** `dialog.js` 加了一个 `notice` 配置（只读清单，不参与返回值）：
+
+```js
+notice: [
+  { tone: "close", title: "会一起关掉 2 个打开的标签页", items: [{ title, meta: domain }] },
+  { tone: "keep",  title: "另有 1 个只是标题相同…不会关闭", items: [...] }
+]
+```
+
+- 每组最多显示 5 条，多的收成「还有 N 个…」——弹窗不能被清单撑爆；
+- 两档视觉分开：`close` 左侧一条危险色竖线，`keep` 只有描边 + 压灰，标题本身就写着「不会关闭」；
+- 清单生成放在 `tab-navigation.js` 的 `noticeGroups()`，因为**只有它知道两档的含义**，
+  而全屏收藏库和侧边栏必须用同一套说法（`sidepanel.js` 的删除走同一个函数）。
+
+**整组拖拽。** `enableReorder()` 加 `supportsMulti`（只有网格传 true，图板没有多选）：
+
+- dragstart 里先判断 `asGroup = supportsMulti && selectMode && selectedIds.size > 1 && selectedIds.has(id)`；
+  是整组就不退出多选，否则照旧退出（拖一张没选中的 = 只想挪这一张）；
+- 拖影：`buildGroupDragPreview()` 在同一个浮层里画三层——最上面是卡片克隆，下面两层错开的空壳，
+  右上角 `+N`。**浏览器一次只允许挂一个 drag image**，所谓「聚拢」只能画出来；
+- 列表侧：`.grid.is-group-dragging .card.selected:not(.dragging)` 缩到 .93 + 透明度 .3。
+  只用 `transform` + `opacity`（不占布局），所以那套「拖动开始时拍一次坐标快照」的判定不受影响；
+- 整组拖拽**不拍快照、不参与列表内重排**：一叠卡片没有「插到第几个」这回事，
+  拍下来反而会让 `dragover` 去写 inline `transform`，把上面那条 CSS 效果顶掉；
+- 落点：`enableDropTarget()` 的 drop 先读 `groupDragIds`（内存里那一份；
+  dataTransfer 的自定义类型照样 set，但 dragover 阶段浏览器给的是保护模式、`getData` 读不到），
+  长度 > 1 就走 `commitItemMutation("update", ids, { projectId })` 一次批量写，然后 `finishBulk()`。
+
+**退出多选。** `library.html` 在 `#selectMode` 右边加 `#exitSelectMode`（`hidden` 由
+`setSelectMode()` 控制），删掉那段 `pointerdown` 监听。退出只剩三个入口：
+这个按钮、底部工具栏的「完成」、Esc。
+
+### 为什么这个不难
+
+浏览器只给一个 drag image，所以「一叠跟着走」必须画在一个浮层里——但那只是画三层错开的壳、
+加个角标，没有额外 API。真正要处理的只有两件事：
+
+1. **拖拽判定和重排要解耦**：组拖拽不拍快照、不写 inline transform，否则和「缩小淡出」打架；
+2. **落到项目行要改成批量写**：drop 里从「读一个 id」变成「读一组 id」，一次
+   `MUTATE_ITEMS` 就完事（后台本来就支持 ids 数组）。
+
+没有跨组件通信、没有新依赖、没有新的存储字段。工作量集中在一个函数（`enableReorder`）
+和一条 drop 分支上。
+
+### 动到的文件
+
+| 文件 | 改了什么 |
+|---|---|
+| `tab-navigation.js` | `inspect()` 分两档；`closeTabs()`；`noticeGroups()` / `noticeEntries()` 生成清单 |
+| `dialog.js` / `dialog.css` | `notice` 只读清单区（分组、截断、超量收成活点） |
+| `library.js` | 整组拖拽（`groupDragIds` / `buildGroupDragPreview` / `is-group-dragging` / 批量 drop）；删除路径改 `inspect` + `closeTabs(exact)`；`#exitSelectMode`；删掉 `pointerdown` 退出 |
+| `library.html` / `library.css` | 「退出多选」按钮；整组拖影与聚拢样式 |
+| `sidepanel.js` | 删除弹窗同样走两档清单，只关 exact |
+| `i18n.js` | `tabsWillClose` / `tabsKeepSameTitle` / `tabsWillCloseSameTitle` / `noticeMore` / `exitSelect`（删掉废弃的 `deleteWillCloseTabs`） |
+| `tests/select-group-drag.test.js` | 新增，22 项 |
+| `tests/close-tabs-on-delete.test.js` | 改断言：清单两档、网址变了那档「列出来但不关」 |
+| `tests/sidepanel-delete.test.js` | 改断言；桩里加载真实的 `tab-navigation.js` + `url-utils.js` |
+| `tests/select-mode.test.js` | 「点空白退出」改成「点空白不清空，按钮才退出」 |
+
+### 验证与反证
+
+- 单元测试 **79/79**（新增 `select-group-drag.test.js`），端到端 **6/6 spec**。
+- 反证三次，都确认断言会真红：
+  1. 把 `asGroup` 写死成 `false` + 批量 drop 分支写死成 `false` → 8 条红，
+     其中「两张都进了项目一」实际只搬了一张（`{"a":"p1","b":null,"c":null}`）——正是这个 bug 的原貌；
+  2. 把 `fuzzy` 也 `push` 进 `exact`（回到两档合并）→ 3 条红，
+     那条「只是标题相同」的标签页真的被关掉了（`71`）；
+  3. 把 `pointerdown` 退出加回去 → 「点空白处不清空选择」红（`已选 0 篇`）。
+- **真 Chromium 实测**（临时脚本，跑完即删）：
+  - 退出按钮在「选择」右边 73px 处、同高 32px；
+  - 多选状态下滚轮滚动 `0 → 94`、仍在多选、计数仍是「已选 3 篇」；
+  - 真实拖拽中：`is-group-dragging` 生效、`.drag-group-preview` 存在、角标 `+2`、
+    另两张 `opacity: 0.3`；落在「工作」项目行后三条全部 `projectId: "p1"`，
+    多选退出，提示「已将 3 篇移到「工作」」，控制台无错误。
+- 顺带记一个测试坑：`vm.createContext()` 里**没有 `URL`**（它是宿主提供的，不是 JS 内置），
+  于是 `tab-navigation.js` 里 `new URL()` 抛错、被自己的 `catch` 吞成「认不出网址」，
+  所有标签页都匹配不上——测试会绿得毫无意义。`sidepanel-delete.test.js` 里显式注入了 `URL`。
+
+### 考虑过但没做的
+
+- **多选时不支持在列表内整组重排**：一叠卡片丢回列表中间没有明确落点（插到第几个？），
+  硬做需要定义「整组插入的位置如何摊开」，收益低、歧义大。要排顺序先退出多选。
+- **不给「仅标题相同」那档加勾选框**：默认不关已经解决了误关，加复选会把 `confirm`
+  变成半个表单（`dialog.js` 里要引入 `values` 返回），多一层状态。真想把那个也关掉，手动关一下。
+- **「关闭已打开」仍两档都关**：用户点它的意图是「把这个项目收干净」，漏关比多关更烦人；
+  但清单照样分两档列出来（`closeFuzzy: true` 时第二组也标成会关），让人看见有这一档。
 
 ---
 

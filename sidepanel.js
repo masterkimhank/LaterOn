@@ -1946,21 +1946,27 @@ async function deleteItem(id) {
   const title = raw.length > 26 ? `${raw.slice(0, 26)}…` : raw;
   try { await ensureDialogLoaded(); }
   catch { status.textContent = tr("operationFailed"); return; }
-  // 开了「删除时关掉已开的标签页」，先把要关几个数出来写进确认框：
+  // 开了「删除时关掉已开的标签页」，就把会关的 / 只是标题相同的分两档列进确认框：
   // 这一条很可能就是用户此刻正在读的那一页，先说清楚再动手。
-  const openTabs = closeTabsOnDelete
-    ? (await globalThis.LaterOnTabs?.matches?.([target]))?.length || 0
-    : 0;
+  // 清单由 tab-navigation.js 统一生成，和全屏收藏库是同一套说法。
+  const { exact, fuzzy } = closeTabsOnDelete
+    ? ((await globalThis.LaterOnTabs?.inspect?.([target])) || { exact: [], fuzzy: [] })
+    : { exact: [], fuzzy: [] };
+  const notice = globalThis.LaterOnTabs?.noticeGroups?.(exact, fuzzy) || [];
   const confirmed = await window.LaterOnDialog.confirm({
     tone: "danger", title: tr("deleteItemTitle", { title }),
-    message: openTabs ? `${tr("deleteCannotUndo")} ${tr("deleteWillCloseTabs", { n: openTabs })}` : tr("deleteCannotUndo"),
+    message: tr("deleteCannotUndo"),
+    notice: notice.length ? notice : undefined,
     confirmText: tr("delete")
   });
   if (!confirmed) return;
   if (!await commitItemMutation("delete", [id])) return;
   // 侧栏用顶部状态条报结果（它没有全屏那套 toast），关掉标签页这件事也要说一声。
   if (!closeTabsOnDelete) return;
-  const closed = (await globalThis.LaterOnTabs?.closeMatching?.([target])) || 0;
+  // 只关网址对得上的那档：标题兜底那档只是猜的，弹窗里已经列出来给人看过、也没打算关。
+  // 重新查一遍是因为确认框可能开了十几秒，中途自己关掉的标签页不该算进「关掉了 N 个」。
+  const fresh = await globalThis.LaterOnTabs?.inspect?.([target]);
+  const closed = (await globalThis.LaterOnTabs?.closeTabs?.(fresh?.exact || [])) || 0;
   if (closed) status.textContent = tr("itemDeletedAndClosed", { n: closed });
 }
 

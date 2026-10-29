@@ -1,11 +1,14 @@
 // 删除收藏时「同时关掉浏览器里还开着的同一网页」这个开关。
 // 覆盖：
 //  1) 默认关闭：删除时不去碰任何标签页，确认框也不提这回事（回归：别把默认行为改了）
-//  2) 打开后：确认框先写明「会关掉 N 个」，N 只算同网址的标签页（跨 www / 带 utm 参数也算同一篇）
-//  3) 确认后真的关掉那几个，别的网址、扩展自己的页面一律不碰；提示语写明关了几个
+//  2) 打开后：确认框列清单，「会一起关掉 N 个」只算**网址对得上**的标签页
+//     （跨 www / 带 utm 参数也算同一篇），另外「只是标题相同」的单独列一组、不关
+//  3) 确认后真的关掉清单第一组那几个，别的网址、扩展自己的页面一律不碰；提示语写明关了几个
 //  4) 没有开着的标签页时，提示语维持原来那句（不多说一句废话）
 //  5) 批量删除同样按整个选中集合来算、来关
 //  6) 中途在别的标签页把开关关掉，这边不刷新也能立刻生效
+//  7) 网址变了、只有标题相同的标签页：列出来给人看，但**默认不关**
+//     （以前是跟着关的——这就是「关闭的标签和所选的不一致」）
 const fs = require("fs");
 const path = require("path");
 const { JSDOM, VirtualConsole } = require("jsdom");
@@ -119,6 +122,17 @@ const pressKey = (el, key) => el.dispatchEvent(new window.KeyboardEvent("keydown
 const cardOf = (id) => document.querySelector(`#cardGrid .card[data-id="${id}"]`);
 const dialog = () => document.querySelector(".lod-root:not([hidden])");
 const dialogMessage = () => dialog()?.querySelector(".lod-message")?.textContent || "";
+// 弹窗里的只读清单：分组读成 [{ tone, title, items }]，条目不包含「还有 N 个」那行。
+const dialogNotice = () => {
+  const box = dialog()?.querySelector(".lod-notice");
+  if (!box || box.hidden) return [];
+  return [...box.querySelectorAll(".lod-notice-group")].map((group) => ({
+    tone: group.dataset.tone || "",
+    title: group.querySelector(".lod-notice-title")?.textContent || "",
+    items: [...group.querySelectorAll(".lod-notice-list li:not(.lod-notice-more)")]
+      .map((li) => li.querySelector(".lod-notice-name")?.textContent || li.textContent)
+  }));
+};
 const toastText = () => document.querySelector("#toast").textContent;
 const clickDelete = (id) => click(cardOf(id).querySelector(".delete"));
 async function confirmDialog(ok = true) {
@@ -144,10 +158,10 @@ async function setSwitch(on) {
   await tick(80);
 
   openTabs = [
-    { id: 11, url: "https://example.com/a1" },
-    { id: 12, url: "https://www.example.com/a1/?utm_source=weixin" },
-    { id: 13, url: "https://example.com/somewhere-else" },
-    { id: 14, url: "chrome-extension://lateron/library.html" }
+    { id: 11, url: "https://example.com/a1", title: "标题一" },
+    { id: 12, url: "https://www.example.com/a1/?utm_source=weixin", title: "标题一" },
+    { id: 13, url: "https://example.com/somewhere-else", title: "别的文章" },
+    { id: 14, url: "chrome-extension://lateron/library.html", title: "LaterOn" }
   ];
 
   click(document.querySelector('.project-nav[data-project="unfiled"]'));
@@ -159,7 +173,7 @@ async function setSwitch(on) {
   console.log("── 默认关闭：不碰标签页 ──");
   clickDelete("a1");
   await tick(40);
-  check("确认框里没有「会关掉标签页」这句", !/标签页/.test(dialogMessage()), dialogMessage());
+  check("确认框里没有标签页清单", dialogNotice().length === 0, JSON.stringify(dialogNotice()));
   await confirmDialog(false);
   check("取消之后标签页一个都没关", removedTabIds.length === 0, removedTabIds.join(","));
 
@@ -167,8 +181,11 @@ async function setSwitch(on) {
   await setSwitch(true);
   clickDelete("a1");
   await tick(40);
-  check("确认框写明会关 2 个（同一篇的 www / utm 变体也算）",
-    /同时会关掉 2 个已打开的这个网页的标签页/.test(dialogMessage()), dialogMessage());
+  const twoTabs = dialogNotice();
+  check("确认框分出一组「会一起关掉 2 个」（同一篇的 www / utm 变体也算）",
+    twoTabs.length === 1 && twoTabs[0].tone === "close" && twoTabs[0].items.length === 2,
+    JSON.stringify(twoTabs));
+  check("两个标签页按标题列出来了", twoTabs[0]?.items.join("|") === "标题一|标题一", (twoTabs[0]?.items || []).join("|"));
   check("取消对话仍然一个都不关", (await confirmDialog(false), removedTabIds.length === 0), removedTabIds.join(","));
 
   clickDelete("a1");
@@ -185,7 +202,8 @@ async function setSwitch(on) {
   removedTabIds.length = 0;
   clickDelete("a2");
   await tick(40);
-  check("确认框只说「删除后无法恢复」", dialogMessage() === "删除后无法恢复。", dialogMessage());
+  check("确认框只说「删除后无法恢复」且没有清单",
+    dialogMessage() === "删除后无法恢复。" && dialogNotice().length === 0, dialogMessage());
   await confirmDialog(true);
   check("提示语还是原来那句", toastText() === "已删除网页", toastText());
   check("没有调用关标签页", removedTabIds.length === 0, removedTabIds.join(","));
@@ -201,8 +219,10 @@ async function setSwitch(on) {
   removedTabIds.length = 0;
   click(document.querySelector("#bulkDelete"));
   await tick(40);
-  check("批量确认框也写了要关 1 个",
-    /同时会关掉 1 个已打开的这个网页的标签页/.test(dialogMessage()), dialogMessage());
+  const bulkGroups = dialogNotice();
+  check("批量确认框也只列「网址对得上」的那 1 个",
+    bulkGroups.length === 1 && bulkGroups[0].tone === "close" && bulkGroups[0].items.length === 1,
+    JSON.stringify(bulkGroups));
   await confirmDialog(true);
   check("a3 那个标签页被关掉了", removedTabIds.join(",") === "21", removedTabIds.join(","));
   check("批量提示语同时报篇数和标签数",
@@ -222,15 +242,16 @@ async function setSwitch(on) {
   clickDelete("b1");
   await tick(40);
   check("（准备）确认框确实弹出来了", !!dialog());
-  check("关掉开关后确认框不再提标签页", !/标签页/.test(dialogMessage()), dialogMessage());
+  check("关掉开关后确认框不再列清单", dialogNotice().length === 0, JSON.stringify(dialogNotice()));
   await confirmDialog(true);
   check("收藏被删掉了", !store.laterOnItems.some((entry) => entry.id === "b1"), store.laterOnItems.map((entry) => entry.id).join(","));
   check("也没有真的去关", removedTabIds.length === 0, removedTabIds.join(","));
   check("提示语是原来那句", toastText() === "已删除网页", toastText());
 
-  console.log("\n── 网址变了也照样关得掉（靠添加时的原标题） ──");
-  // 有些站点每次打开的网址都不一样：收藏里存的是当初那个网址，
-  // 浏览器里开着的是新网址，只比网址就会漏关。
+  console.log("\n── 网址变了、只有标题相同：列出来，但不关 ──");
+  // 有些站点每次打开的网址都不一样（分页、SPA 路由、短链）。这种情况只能靠标题认，
+  // 但标题也会撞车——所以这一档只列在确认框里给人看，默认不动它。
+  // 以前是跟着一起关的：「删掉选中的 A，却关掉了根本不是 A 的那一页」。
   store.laterOnItems = [{
     id: "c1", title: "换了网址也还是同一篇", titleAtSave: "换了网址也还是同一篇",
     description: "摘要", image: "", favicon: "", source: "example.com",
@@ -243,9 +264,14 @@ async function setSwitch(on) {
   removedTabIds.length = 0;
   clickDelete("c1");
   await tick(40);
-  check("确认框说会关 1 个", /同时会关掉 1 个已打开的这个网页的标签页/.test(dialogMessage()), dialogMessage());
+  const fuzzyGroup = dialogNotice();
+  check("确认框把它单独列成「只是标题相同」那一组",
+    fuzzyGroup.length === 1 && fuzzyGroup[0].tone === "keep" && fuzzyGroup[0].items.length === 1,
+    JSON.stringify(fuzzyGroup));
+  check("这一组的标题说明了「不会关闭」", /不会关闭/.test(fuzzyGroup[0]?.title || ""), fuzzyGroup[0]?.title);
   await confirmDialog(true);
-  check("网址不同但标题相同的那一个被关掉了", removedTabIds.join(",") === "71", removedTabIds.join(","));
+  check("确认后也没有关它（宁可漏关，不能误关）", removedTabIds.length === 0, removedTabIds.join(","));
+  check("收藏本身还是被删掉了", !store.laterOnItems.some((entry) => entry.id === "c1"));
 
   console.log("\n── 页面错误 ──");
   check("整个过程没有出现未捕获的错误", errors.length === 0, errors.join(" | "));

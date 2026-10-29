@@ -211,11 +211,26 @@ const ITEMS = ["a", "b", "c"].map((key, index) => ({
   check("移动后自动退出多选", !grid.classList.contains("selecting") && !document.querySelector("#bulkBar").classList.contains("is-open"));
   check("给出批量移动完成提示", /已将 2 篇移到「工作」/.test(document.querySelector("#toast").textContent), document.querySelector("#toast").textContent);
 
-  console.log("\n── 点击页面空白仍退出多选 ──");
+  console.log("\n── 点页面空白不再退出多选（退出只认「退出多选」按钮） ──");
   click(document.querySelector("#selectMode"));
   click(cardOf("item-c"));
+  const exitBtn = document.querySelector("#exitSelectMode");
+  check("进入多选后，选择右边出现「退出多选」", !!exitBtn && exitBtn.hidden === false);
+  // 以前点空白处就退出：挑卡片本来就要点来点去（滚动、看正文、改筛选），
+  // 一次误触就把辛苦选的一批清空，而且没有任何反馈。
   pointerDown(document.body);
-  check("空白处退出多选并清空选择", !grid.classList.contains("selecting") && !isSelected("item-c") && bulkCount() === "已选 0 篇");
+  check("点空白处不清空选择",
+    grid.classList.contains("selecting") && isSelected("item-c") && bulkCount() === "已选 1 篇",
+    bulkCount());
+  // 滚动也不能被多选挡掉：滚动条在滚动容器上，多选只是给网格加了个 class。
+  check("多选没有把页面改成不可滚动",
+    !/hidden/.test(document.documentElement.style.overflow || "") && !/hidden/.test(document.body.style.overflow || ""),
+    `${document.documentElement.style.overflow}/${document.body.style.overflow}`);
+  click(exitBtn);
+  check("点「退出多选」才退出并清空选择",
+    !grid.classList.contains("selecting") && !isSelected("item-c") && bulkCount() === "已选 0 篇",
+    bulkCount());
+  check("退出后按钮自己收起来", exitBtn.hidden === true);
 
   console.log("\n── 退出多选后，点文章要能正常打开 ──");
   check("退出了多选状态", !grid.classList.contains("selecting"));
@@ -226,7 +241,7 @@ const ITEMS = ["a", "b", "c"].map((key, index) => ({
   check("正常模式下点标题不会去勾选它", isSelected("item-c") === false);
   check("文章确实被打开了", navigations.length === beforeNavigations + 1, `${navigations.length - beforeNavigations} 次跳转`);
 
-  console.log("\n── 批量删除：真实 pointerdown + click 不能清空待删除选择 ──");
+  console.log("\n── 批量删除：点确认框不会清空待删除的选择 ──");
   click(document.querySelector('.project-nav[data-project="work"]'));
   await tick();
   click(document.querySelector("#selectMode"));

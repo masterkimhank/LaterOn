@@ -91,6 +91,10 @@ let dragPreview = null;
 //   slot —— 当前算出的插入位置（用来判断要不要重排，避免抖动）
 let drag = null;
 let dragHomeFrame = null;   // 原位置留下的那个空虚线框（绝对定位浮层，不占格子）
+// 多选整组拖拽：一次拖走的是一叠卡片。null = 普通单张拖拽。
+// id 同时塞进 dataTransfer 的自定义类型里（同页面内用内存这份就够，那份是给将来跨 frame 留的）。
+let groupDragIds = null;
+const ITEM_GROUP_DRAG_TYPE = "application/x-lateron-items";
 let selectMode = false;
 const selectedIds = new Set();
 let renamingId = null;        // 正在改名的项目 id（null = 当前没有在改名）
@@ -129,7 +133,10 @@ const tr = (key, vars) => {
     noInboxMatchesHint: "换个关键词，或把范围切到「全部」在全部网页里找。",
     scopedCount: "{count} 篇网页 · {unfinished} 篇没看完", noMatches: "没有找到匹配的网页",
     noMatchesHint: "换个关键词，或切换顶部的阅读状态筛选。", quiet: "这里还很安静",
-    deleteWillCloseTabs: "同时会关掉 {n} 个已打开的这个网页的标签页。",
+    tabsWillClose: "会一起关掉 {n} 个打开的标签页",
+    tabsKeepSameTitle: "另有 {n} 个标签页只是标题相同，可能不是这一篇，不会关闭",
+    tabsWillCloseSameTitle: "另有 {n} 个标签页只是标题相同，也会一起关闭",
+    noticeMore: "还有 {n} 个…",
     titleAtSaveLine: "收藏时：{title}",
     itemDeletedAndClosed: "已删除网页，并关闭了 {n} 个标签页",
     bulkDeletedAndClosed: "已删除 {n} 篇，并关闭了 {closed} 个标签页",
@@ -867,31 +874,66 @@ grid.addEventListener("keydown", (event) => {
 // （叠加 FLIP 动画后更糟：动画期间 getBoundingClientRect 读到的是中间值）。
 // 现在改成：布局只在拖动开始时拍一次快照，之后判定用快照、让位用 transform。
 //
+// 一叠卡片的拖影：最上面一张是真的卡片克隆，下面两层错开的空壳表示「还有好几张」，
+// 右上角一个 +N。浏览器只允许挂一个 drag image，所以「聚拢」这件事只能画在同一个浮层里。
+// 尺寸必须和原卡片一模一样：setDragImage 按这个盒子的坐标算热点，尺寸变了光标就偏。
+function buildGroupDragPreview(el, bounds, count) {
+  const wrap = document.createElement("div");
+  wrap.className = "drag-preview drag-group-preview";
+  wrap.style.width = `${bounds.width}px`;
+  wrap.style.height = `${bounds.height}px`;
+  const back = document.createElement("span");
+  back.className = "drag-group-sheet is-back";
+  const mid = document.createElement("span");
+  mid.className = "drag-group-sheet is-mid";
+  const top = el.cloneNode(true);
+  top.removeAttribute("draggable");
+  // .selected 会把勾选态一起克隆进来；.dragging 会把内容藏掉。这里都要清掉。
+  top.classList.remove("dragging", "selected");
+  top.classList.add("drag-group-top");
+  const badge = document.createElement("span");
+  badge.className = "drag-group-count";
+  badge.textContent = `+${Math.max(0, count - 1)}`;
+  wrap.append(back, mid, top, badge);
+  document.body.append(wrap);
+  return wrap;
+}
+
 // 参数：container 在哪个容器里拖 / selector 被拖的元素 / idAttr 元素上记 id 的
 // data 属性名（"id" → data-id、"project" → data-project）/ commit 松手时怎么存。
-function enableReorder({ container, selector, idAttr, commit, dragImageHotspotX = null }) {
+// supportsMulti：拖「已选中的一张」时是整组拖，还是照旧退出多选（图板没有多选）。
+function enableReorder({ container, selector, idAttr, commit, dragImageHotspotX = null, supportsMulti = false }) {
   container.addEventListener("dragstart", (event) => {
     const el = event.target.closest(selector);
     if (!el) return;
-    // 拖拽是另一种明确操作：离开多选状态，避免拖动后仍保留旧的勾选。
-    if (selectMode) setSelectMode(false);
     // 从按钮 / 下拉上按下的是想点它，不是想拖整块（图板上那个改简介的铅笔就是）。
+    // 这一条要排在「离开多选」前面，否则点一下卡片上的按钮就把选择清空了。
     if (event.target.closest("button, select")) { event.preventDefault(); return; }
     const id = el.dataset[idAttr];
     if (!id) return;
-    drag = { container, selector, idAttr, id, layout: null, slot: null };
+    // 多选状态下拖「已选中的一张」= 把这一叠整体拖走（拖到项目行就整组搬过去）；
+    // 拖一张没选中的，才是「我要单独挪这一张」，那时候退出多选。
+    const asGroup = supportsMulti && selectMode && selectedIds.size > 1 && selectedIds.has(id);
+    if (selectMode && !asGroup) setSelectMode(false);
+    groupDragIds = asGroup ? [...selectedIds] : null;
+    drag = { container, selector, idAttr, id, layout: null, slot: null, group: asGroup };
     if (event.dataTransfer) {
       event.dataTransfer.effectAllowed = "move";
       event.dataTransfer.setData("text/plain", id);
+      if (asGroup) event.dataTransfer.setData(ITEM_GROUP_DRAG_TYPE, JSON.stringify(groupDragIds));
     }
     const bounds = el.getBoundingClientRect();
-    dragPreview = el.cloneNode(true);
-    dragPreview.removeAttribute("draggable");
-    dragPreview.classList.remove("dragging");
-    dragPreview.classList.add("drag-preview");
-    dragPreview.style.width = `${bounds.width}px`;
-    dragPreview.style.height = `${bounds.height}px`;
-    document.body.append(dragPreview);
+    dragPreview = asGroup
+      ? buildGroupDragPreview(el, bounds, groupDragIds.length)
+      : el.cloneNode(true);
+    if (!asGroup) {
+      dragPreview.removeAttribute("draggable");
+      dragPreview.classList.remove("dragging");
+      dragPreview.classList.add("drag-preview");
+      dragPreview.style.width = `${bounds.width}px`;
+      dragPreview.style.height = `${bounds.height}px`;
+      document.body.append(dragPreview);
+    }
     const grabbedOffsetX = Math.max(0, Math.min(bounds.width, event.clientX - bounds.left));
     // 收藏卡片拖向左侧项目时，用卡片左边缘作为横向触发基准：拖影的光标热点
     // 固定在左边缘附近后，左边缘刚碰到项目行，真实指针也就进入了放置区。
@@ -902,8 +944,14 @@ function enableReorder({ container, selector, idAttr, commit, dragImageHotspotX 
     const offsetY = Math.max(0, Math.min(bounds.height, event.clientY - bounds.top));
     event.dataTransfer?.setDragImage?.(dragPreview, offsetX, offsetY);
     // 快照要在 setDragImage 之后拍，并且此时元素还没加 .dragging（那个类会改变外观）。
-    drag.layout = snapshotLayout(container, selector, idAttr);
-    showDragHomeFrame();
+    // 组拖拽不拍快照：一叠卡片没有「插到第几个」这回事，拍下来反而会让 dragover 去写
+    // inline transform，把下面那条「整组缩小淡出」的 CSS 效果顶掉。
+    if (!asGroup) {
+      drag.layout = snapshotLayout(container, selector, idAttr);
+      showDragHomeFrame();
+    } else {
+      container.classList.add("is-group-dragging");
+    }
     container.classList.add("is-reordering");
     requestAnimationFrame(() => el.classList.add("dragging"));
   });
@@ -915,6 +963,8 @@ function enableReorder({ container, selector, idAttr, commit, dragImageHotspotX 
     // 所以「置空」必须排在它后面（拖到别处或按 Esc 取消不会触发 drop，这里兜底）。
     clearReorderPreview();
     drag = null;
+    groupDragIds = null;
+    container.classList.remove("is-group-dragging");
     clearDropHighlights();
   });
   container.addEventListener("dragover", (event) => {
@@ -932,6 +982,9 @@ function enableReorder({ container, selector, idAttr, commit, dragImageHotspotX 
   container.addEventListener("drop", (event) => {
     if (!drag || drag.container !== container) return;
     event.preventDefault();
+    // 一叠卡片丢回列表中间没有明确落点（插到第几个？），所以不重排；
+    // 它真正要落的地方是左侧项目行，那由 enableDropTarget 处理。
+    if (drag.group) return;
     // 直接用最后一次算好的位置：松手时光标可能正好停在缝隙里，重新判定反而容易算偏。
     const index = drag.slot ?? insertionIndexAt(
       (Number.isFinite(event.clientX) ? event.clientX : 0) + window.scrollX,
@@ -942,7 +995,7 @@ function enableReorder({ container, selector, idAttr, commit, dragImageHotspotX 
 }
 
 // 卡片：拖一张卡片到另一个位置 → 换阅读顺序（每个项目各存一份，互不影响）。
-enableReorder({ container: grid, selector: ".card", idAttr: "id", commit: commitCardOrder, dragImageHotspotX: 8 });
+enableReorder({ container: grid, selector: ".card", idAttr: "id", commit: commitCardOrder, dragImageHotspotX: 8, supportsMulti: true });
 // 图板：拖一块图板 → 换这个类目在图板墙上的位置。和拖卡片是同一套手感。
 enableReorder({ container: boardGrid, selector: ".board-card", idAttr: "project", commit: commitBoardOrder });
 
@@ -2323,6 +2376,19 @@ function enableDropTarget(target) {
     const projectId = destination === "unfiled" ? null : destination;
     const projectName = projectId ? projects.find((project) => project.id === projectId)?.name : tr("inbox");
     clearDropHighlights();
+    // 多选整组：把这一叠全搬过去。拖影上画着 +N，松手就该是这个 N 一起动，
+    // 否则「聚拢拖着走」只是好看，落下去还是只搬了一张。
+    const groupIds = Array.isArray(groupDragIds)
+      ? groupDragIds.filter((id) => items.some((entry) => entry.id === id))
+      : [];
+    if (groupIds.length > 1) {
+      const result = await commitItemMutation("update", new Set(groupIds), { projectId });
+      if (!result) return;
+      // 搬完就退出多选：这批卡片已经离开当前视图（或已归好类），留着勾选只会让人误以为还没处理。
+      finishBulk();
+      showToast(tr("bulkMoved", { n: result.affected, name: projectName || tr("genericProject") }));
+      return;
+    }
     if (!itemId || !items.some((item) => item.id === itemId)) return;
     if (!await updateItem(itemId, { projectId })) return;
     showToast(tr("movedIntoProject", { name: projectName || tr("genericProject") }));
@@ -2907,17 +2973,34 @@ function openCardProjectPicker(card, item, select) {
 }
 
 // ── 删除时顺带关掉浏览器里还开着的同一网页（设置页可开，默认关）──────
-// 只数不关：确认框里那句「还会关掉 N 个标签页」用，让人在按下删除之前就知道代价。
+// 分两档（见 tab-navigation.js 的 inspect）：
+//   exact —— 网址对得上，确定是同一篇，删了就一起关；
+//   fuzzy —— 只是「同一站点 + 同一标题」，可能是另一篇（日报类站点标题天天一样），
+//            **列出来给人看，但不关**。
+// 以前两档混在一起，于是「删掉选中的 A」会顺手关掉根本不是 A 的标签页，
+// 而且确认框里的数字和用户数的对不上——这就是「关闭的标签与所选标签不一致」。
 // 整个条目（而不是只拿网址）传进去：网址变了的那些要靠「原标题」才认得出来。
-async function countOpenTabs(itemsToClose) {
-  if (!closeTabsOnDelete || !itemsToClose.length) return 0;
-  const tabs = await globalThis.LaterOnTabs?.matches?.(itemsToClose);
-  return Array.isArray(tabs) ? tabs.length : 0;
+async function inspectOpenTabs(itemsToClose) {
+  const empty = { exact: [], fuzzy: [] };
+  if (!closeTabsOnDelete || !itemsToClose?.length) return empty;
+  const result = await globalThis.LaterOnTabs?.inspect?.(itemsToClose);
+  if (!result) return empty;
+  return { exact: result.exact || [], fuzzy: result.fuzzy || [] };
 }
-// 删完之后真正动手。返回关掉的个数，没关就是 0（提示语据此换说法）。
+
+// 清单里的一行：标题会很长，截断免得把弹窗撑成一整行；域名放右边当第二判据。
+// 清单本身由 tab-navigation.js 生成：只有它知道「exact / fuzzy」两档的含义，
+// 而全屏收藏库和侧边栏必须用同一套说法，否则同一件事两个界面两种解释。
+function tabsNotice(exact, fuzzy, closeFuzzy = false) {
+  return globalThis.LaterOnTabs?.noticeGroups?.(exact, fuzzy, { closeFuzzy }) || [];
+}
+
+// 删完之后真正动手。只关 exact 那档，并重新查一遍——
+// 确认框可能开了十几秒，用户中途自己关掉的标签页不该算进「关掉了 N 个」里。
 async function closeOpenTabs(itemsToClose) {
-  if (!closeTabsOnDelete || !itemsToClose.length) return 0;
-  return (await globalThis.LaterOnTabs?.closeMatching?.(itemsToClose)) || 0;
+  if (!closeTabsOnDelete || !itemsToClose?.length) return 0;
+  const fresh = await globalThis.LaterOnTabs?.inspect?.(itemsToClose);
+  return (await globalThis.LaterOnTabs?.closeTabs?.(fresh?.exact || [])) || 0;
 }
 
 // ── 单个项目：关掉这个项目里还开着的标签页，但一条收藏都不删 ──────────
@@ -2935,12 +3018,16 @@ async function closeProjectTabs(projectId) {
   const name = project ? project.name : tr("inbox");
   const scope = projectScopeItems(projectId);
   if (!scope.length) { showToast(tr("closeTabsNoItems", { name })); return; }
-  // 先数一遍：一个都没开着就别弹框了，直接说一句。
-  const openTabs = (await globalThis.LaterOnTabs?.matches?.(scope)) || [];
-  if (!openTabs.length) { showToast(tr("closeTabsNone", { name })); return; }
+  // 先查一遍：一个都没开着就别弹框了，直接说一句。
+  // 这里两档都关（用户要的是把这个项目收干净），但照样分档列出来——
+  // 「仅标题相同」那一档本来就是猜的，得让人看见自己要不要继续。
+  const { exact, fuzzy } = (await globalThis.LaterOnTabs?.inspect?.(scope)) || { exact: [], fuzzy: [] };
+  const notice = tabsNotice(exact, fuzzy, true);
+  if (!notice.length) { showToast(tr("closeTabsNone", { name })); return; }
   const confirmed = await LaterOnDialog.confirm({
-    title: tr("closeTabsTitle", { name, n: openTabs.length }),
+    title: tr("closeTabsTitle", { name, n: exact.length + fuzzy.length }),
     message: tr("closeTabsMessage"),
+    notice,
     confirmText: tr("closeTabsConfirm")
   });
   if (!confirmed) return;
@@ -2954,13 +3041,15 @@ async function deleteItem(id) {
   // 删除是没法撤销的，删之前一定问一句。标题可能很长，截断免得把弹窗撑成一整段。
   const raw = (target.title || "").trim() || tr("itemFallback");
   const title = raw.length > 26 ? `${raw.slice(0, 26)}…` : raw;
-  // 开了「删除时关掉已开的标签页」就先把要关几个数出来写进确认框：
-  // 免得删完才发现顺手关掉了正在看的那一页。
-  const openTabs = await countOpenTabs([target]);
+  // 开了「删除时关掉已开的标签页」就把会关的、不会关的分两档列进确认框：
+  // 免得删完才发现顺手关掉了正在看的那一页（或者反过来，以为关了其实没关）。
+  const { exact, fuzzy } = await inspectOpenTabs([target]);
+  const notice = tabsNotice(exact, fuzzy);
   const confirmed = await LaterOnDialog.confirm({
     tone: "danger",
     title: tr("deleteItemTitle", { title }),
-    message: openTabs ? `${tr("deleteCannotUndo")} ${tr("deleteWillCloseTabs", { n: openTabs })}` : tr("deleteCannotUndo"),
+    message: tr("deleteCannotUndo"),
+    notice: notice.length ? notice : undefined,
     confirmText: tr("delete")
   });
   if (!confirmed) return;
@@ -2987,20 +3076,15 @@ function setSelectMode(on) {
   selectMode = next;
   grid.classList.toggle("selecting", next);
   document.querySelector("#selectMode")?.classList.toggle("active", next);
+  // 多选时才露出的「退出多选」。以前靠「点页面空白处」退出——那条规则取消掉了：
+  // 挑卡片本来就要点来点去（滚动、看正文、改筛选），一次误触就把辛苦选的一批清空，
+  // 而且没有任何反馈。退出这件事该由一个明确的按钮承担。
+  const exitBtn = document.querySelector("#exitSelectMode");
+  if (exitBtn) exitBtn.hidden = !next;
   const bar = document.querySelector("#bulkBar");
   if (bar) bar.classList.toggle("is-open", next);
   updateSelectionUI();
 }
-
-// 多选期间点击卡片以外的页面操作区，视为用户要离开多选；
-// 卡片本身、底部批量工具栏、“选择”按钮、项目浮层和确认弹窗保留原有交互。
-document.addEventListener("pointerdown", (event) => {
-  if (!selectMode) return;
-  const target = event.target;
-  // Shadow DOM 内的点击会重定向到浮层宿主，选项目和确认时不能清空选择。
-  if (target?.closest?.(".card, #bulkBar, #selectMode, #lateron-folder-picker, .lod-root")) return;
-  setSelectMode(false);
-}, true);
 
 function toggleSelect(id, card, force) {
   const willSelect = force !== undefined ? force : !selectedIds.has(id);
@@ -3064,11 +3148,13 @@ async function bulkDelete() {
   const count = ids.size;
   // 要关的标签页同样按这一刻的选中集合算，之后 items 会随删除被替换掉。
   const targets = items.filter((item) => ids.has(item.id));
-  const openTabs = await countOpenTabs(targets);
+  const { exact, fuzzy } = await inspectOpenTabs(targets);
+  const notice = tabsNotice(exact, fuzzy);
   const confirmed = await LaterOnDialog.confirm({
     tone: "danger",
     title: tr("bulkDeleteTitle", { n: count }),
-    message: openTabs ? `${tr("cannotUndo")} ${tr("deleteWillCloseTabs", { n: openTabs })}` : tr("cannotUndo"),
+    message: tr("cannotUndo"),
+    notice: notice.length ? notice : undefined,
     confirmText: tr("bulkDeleteButton", { n: count })
   });
   if (!confirmed) return;
@@ -3108,6 +3194,7 @@ function finishBulk() {
 }
 
 document.querySelector("#selectMode")?.addEventListener("click", () => setSelectMode(!selectMode));
+document.querySelector("#exitSelectMode")?.addEventListener("click", () => setSelectMode(false));
 // 关掉这个项目里已打开的标签页（收藏保留）。范围取当前所在项目，点了才现查现关。
 document.querySelector("#closeProjectTabs")?.addEventListener("click", () => closeProjectTabs(activeProject));
 document.querySelector("#bulkSelectAll")?.addEventListener("click", () => {

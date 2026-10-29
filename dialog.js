@@ -30,6 +30,15 @@
 //   });
 //   // result.values.coverPick 是有序的收藏 id 数组（[] = 全部取消，回到按内容自动拼封面）。
 //   // 没传 candidates（或备选都不合法）时不会出现这个键，调用方据此保持原值。
+//   // 再传 notice 可以加一块只读清单（删收藏时列出「会关掉哪些标签页」用的就是它）：
+//   LaterOnDialog.confirm({
+//     title: "删除？", tone: "danger",
+//     notice: [
+//       { tone: "close", title: "会关掉 2 个标签页", items: [{ title: "…", meta: "example.com" }] },
+//       { tone: "keep", title: "另有 1 个标题相同，不会关闭", items: [{ title: "…", meta: "example.com" }] }
+//     ]
+//   });
+//   // notice 只显示、不参与返回值（它不是表单，不会把 values 塞进结果）。
 // 也支持字符串简写：LaterOnDialog.confirm("确定删除吗？")
 // 交互：回车确认（多行输入框里 ⌘/Ctrl + 回车）、Esc 取消、点遮罩取消；
 // 同一时刻只显示一个弹窗（自动排队，不会互相叠加）。
@@ -83,6 +92,7 @@
   let titleEl = null;
   let messageEl = null;
   let fieldsEl = null;
+  let noticeEl = null;       // 只读清单区（删收藏时列「会关 / 不会关」的标签页）
   let coverEl = null;
   let coverValue = "";       // 封面区当前的值：data URL（上传了）或 ""（没封面/已移除）
   let picksEl = null;        // 封面组合区（只有调用方给了备选封面才显示）
@@ -124,6 +134,7 @@
       '      <p class="lod-message"></p>',
       '    </div>',
       '  </div>',
+      '  <div class="lod-notice" hidden></div>',
       '  <div class="lod-fields" hidden></div>',
       '  <div class="lod-cover" hidden></div>',
       '  <div class="lod-picks" hidden></div>',
@@ -141,6 +152,7 @@
     titleEl = host.querySelector(".lod-title");
     messageEl = host.querySelector(".lod-message");
     fieldsEl = host.querySelector(".lod-fields");
+    noticeEl = host.querySelector(".lod-notice");
     coverEl = host.querySelector(".lod-cover");
     picksEl = host.querySelector(".lod-picks");
     hintEl = host.querySelector(".lod-hint");
@@ -189,6 +201,55 @@
   }
 
   // 表单模式：按配置渲染一行行输入框（单行用 input，多行用 textarea）。
+  // 只读清单：分组显示一串条目（每条 = 标题 + 右侧的小字，比如域名）。
+  // 为什么单独做一块而不是拼进 message：message 是一段话，超过三四行就成了
+  // 「自己读一句长句」；这里要让人一眼分清「哪些一定会关」和「哪些只是标题撞了」。
+  // 每组最多显示 limit 条（默认 5），多出来的收成一行「还有 N 个」——弹窗不能被清单撑爆。
+  function renderNotice(groups) {
+    noticeEl.replaceChildren();
+    const usable = (Array.isArray(groups) ? groups : [])
+      .map((group) => ({ ...group, items: Array.isArray(group?.items) ? group.items.filter(Boolean) : [] }))
+      .filter((group) => group.items.length);
+    if (!usable.length) { noticeEl.hidden = true; return; }
+    noticeEl.hidden = false;
+    for (const group of usable) {
+      const block = document.createElement("div");
+      block.className = "lod-notice-group";
+      if (group.tone) block.dataset.tone = group.tone;
+      const head = document.createElement("p");
+      head.className = "lod-notice-title";
+      head.textContent = group.title || "";
+      block.append(head);
+      const list = document.createElement("ul");
+      list.className = "lod-notice-list";
+      const limit = Number.isFinite(group.limit) ? Math.max(1, group.limit) : 5;
+      for (const entry of group.items.slice(0, limit)) {
+        const row = document.createElement("li");
+        const name = document.createElement("span");
+        name.className = "lod-notice-name";
+        name.textContent = entry.title || entry.label || "";
+        row.append(name);
+        if (entry.meta) {
+          const meta = document.createElement("span");
+          meta.className = "lod-notice-meta";
+          meta.textContent = entry.meta;
+          row.append(meta);
+        }
+        if (entry.hint) row.title = entry.hint;
+        list.append(row);
+      }
+      const rest = group.items.length - Math.min(limit, group.items.length);
+      if (rest > 0) {
+        const more = document.createElement("li");
+        more.className = "lod-notice-more";
+        more.textContent = t("noticeMore", { n: rest });
+        list.append(more);
+      }
+      block.append(list);
+      noticeEl.append(block);
+    }
+  }
+
   function renderFields(fields) {
     fieldInputs = [];
     fieldsEl.replaceChildren();
@@ -529,6 +590,7 @@
     settle = done;
 
     host.dataset.tone = config.tone === "danger" ? "danger" : "default";
+    renderNotice(config.notice);
     renderFields(config.fields);
     renderCover(config.cover);
     iconEl.innerHTML = ICONS[config.tone] || ICONS.question;

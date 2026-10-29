@@ -7,7 +7,7 @@
     "zh-CN": {
       unread: "未读", read: "已读", all: "全部", allProjects: "全部内容", allProjectsOverview: "全部项目", inbox: "等待整理",
       noInbox: "还没有要整理的", projects: "项目", settings: "设置", slogan: "有价值的网页，留给 LaterOn。", search: "搜索网页",
-      select: "选择", create: "创建", projectName: "项目名称", sortNewest: "最近添加", sortOldest: "最早添加",
+      select: "选择", exitSelect: "退出多选", create: "创建", projectName: "项目名称", sortNewest: "最近添加", sortOldest: "最早添加",
       sortSource: "按来源", sortCustom: "自定义顺序", selectCount: "已选 {count} 篇", selectAll: "全选",
       deselectAll: "取消全选", markDone: "标完成", markUnread: "标未读", openInNewWindow: "在新窗口打开", moveTo: "移动到…", delete: "删除", done: "完成",
       notFinished: "没看完", boardCount: "{groups} 个项目 · 共 {total} 篇网页 · {unfinished} 篇没看完",
@@ -30,7 +30,10 @@
       autoCleanHint: "标记为已读后多少天自动删除（从标为已读那天算起），最短 30 天、最长 180 天，默认 30 天",
       closeTabsOnDelete: "删除网页时，同时关闭已打开的标签页",
       closeTabsOnDeleteHint: "默认关闭；打开后，删除一条收藏会把这个网址在浏览器里还开着的标签页一起关掉，删除确认框会先写明要关几个",
-      deleteWillCloseTabs: "同时会关掉 {n} 个已打开的这个网页的标签页。",
+      tabsWillClose: "会一起关掉 {n} 个打开的标签页",
+      tabsKeepSameTitle: "另有 {n} 个标签页只是标题相同，可能不是这一篇，不会关闭",
+      tabsWillCloseSameTitle: "另有 {n} 个标签页只是标题相同，也会一起关闭",
+      noticeMore: "还有 {n} 个…",
       itemDeletedAndClosed: "已删除网页，并关闭了 {n} 个标签页",
       bulkDeletedAndClosed: "已删除 {n} 篇，并关闭了 {closed} 个标签页",
       // 标题被网站改掉 / 变成失效提示以后，卡片上补一行「当初看到的是哪一条」
@@ -195,7 +198,7 @@
     en: {
       unread: "Unread", read: "Read", all: "All", allProjects: "All content", allProjectsOverview: "All projects", inbox: "Inbox",
       noInbox: "Nothing to sort", projects: "Projects", settings: "Settings", slogan: "Keep valuable pages in LaterOn.", search: "Search pages",
-      select: "Select", create: "Create", projectName: "Project name", sortNewest: "Newest", sortOldest: "Oldest",
+      select: "Select", exitSelect: "Exit selection", create: "Create", projectName: "Project name", sortNewest: "Newest", sortOldest: "Oldest",
       sortSource: "By source", sortCustom: "Custom order", selectCount: "{count} selected", selectAll: "Select all",
       deselectAll: "Deselect all", markDone: "Mark read", markUnread: "Mark unread", openInNewWindow: "Open in new window", moveTo: "Move to…", delete: "Delete", done: "Done",
       notFinished: "unfinished", boardCount: "{groups} projects · {total} pages · {unfinished} unfinished",
@@ -218,7 +221,10 @@
       autoCleanHint: "How many days after being marked read a page is deleted (counted from that day), between 30 and 180 days, 30 by default",
       closeTabsOnDelete: "Close open tabs when deleting a page",
       closeTabsOnDeleteHint: "Off by default. When on, deleting a saved page also closes any open tabs of that URL — the confirmation shows how many will be closed.",
-      deleteWillCloseTabs: "This will also close {n} open tab(s) of this page.",
+      tabsWillClose: "Will close {n} open tab(s) of this page",
+      tabsKeepSameTitle: "{n} more tab(s) share the title but may not be this page — kept open",
+      tabsWillCloseSameTitle: "{n} more tab(s) share the title and will close too",
+      noticeMore: "and {n} more…",
       itemDeletedAndClosed: "Page deleted, {n} tab(s) closed",
       bulkDeletedAndClosed: "Deleted {n} pages, closed {closed} tab(s)",
       // Shown under the title when the site later renames the page (or turns it into a 404)

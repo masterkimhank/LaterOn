@@ -2,6 +2,10 @@
 // A normal click returns to an already-open page (even in another window)
 // instead of quietly creating a duplicate tab.
 (function () {
+  // 弹窗文案走 i18n；没有 i18n（比如单测直接跑这个文件）就返回 key，
+  // 调用方照样拿得到结构，只是文字不好看。
+  const tr = (key, vars) => globalThis.LaterOnI18n?.t?.(key, vars) || key;
+
   function comparable(url) {
     try {
       const parsed = new URL(url);
@@ -80,13 +84,19 @@
     };
   }
 
-  // 这些网页此刻在浏览器里还开着哪些标签页（跨窗口）。
-  // 两道判据：
-  //   ① 网址相同（走 LaterOnUrl.normalize，www / 尾部斜杠 / utm 参数不同也算同一篇）；
-  //   ② 网址对不上、但「同一站点 + 同一标题」——有些站点每次打开的网址都会变
-  //      （换参数、SPA 换路由、短链跳转），单靠网址永远找不到那个标签页。
+  // 这些网页此刻在浏览器里还开着哪些标签页（跨窗口），分两档返回：
+  //   exact —— 网址相同（走 LaterOnUrl.normalize，www / 尾部斜杠 / utm 参数不同也算同一篇）。
+  //            这是确定的同一篇，删收藏时应当一起关掉。
+  //   fuzzy —— 网址对不上、只是「同一站点 + 同一标题」。有些站点每次打开的网址都会变
+  //            （换参数、SPA 换路由、短链跳转），单靠网址永远找不到那个标签页；
+  //            但标题也会撞车（日报类站点每天标题都一样、同站点两篇同名文章），
+  //            所以这一档**不算确定是同一篇**——由调用方单独展示、默认别关。
   // 只认 http/https：扩展自己的页面、chrome:// 之类永远不算，免得删一条收藏把 LaterOn 关掉。
-  async function matches(pages) {
+  //
+  // 分档这件事本身就是修 bug：以前 matches() 把两档混在一起返回，于是「删掉选中的 A」
+  // 会连带关掉同站点同标题、但根本不是 A 的标签页——用户在确认框里只看到「会关掉 3 个」，
+  // 数出来的却是自己不想关的那几个。
+  async function inspect(pages) {
     const list = (pages || []).map(asPage).filter(Boolean);
     const urlKeys = new Set(list.map((page) => comparable(page.url)).filter(Boolean));
     const titlesByHost = new Map();
@@ -97,30 +107,84 @@
       if (!titlesByHost.has(host)) titlesByHost.set(host, []);
       titlesByHost.get(host).push({ key, source: page.source });
     }
-    if (!urlKeys.size && !titlesByHost.size) return [];
+    if (!urlKeys.size && !titlesByHost.size) return { exact: [], fuzzy: [] };
     const tabs = await chrome.tabs.query({}).catch(() => []);
-    return tabs.filter((tab) => {
+    const exact = [];
+    const fuzzy = [];
+    for (const tab of tabs) {
       const url = tab.url || tab.pendingUrl;
       const key = comparable(url);
-      if (!key) return false;
-      if (urlKeys.has(key)) return true;
+      if (!key) continue;
+      if (urlKeys.has(key)) { exact.push(tab); continue; }
       const candidates = titlesByHost.get(hostOf(url));
-      if (!candidates) return false;
+      if (!candidates) continue;
       const tabTitle = tab.title || "";
-      return candidates.some((entry) => titleKey(tabTitle, entry.source) === entry.key);
-    });
+      if (candidates.some((entry) => titleKey(tabTitle, entry.source) === entry.key)) fuzzy.push(tab);
+    }
+    return { exact, fuzzy };
   }
 
-  // 关掉这些网页对应的标签页，返回实际关掉的数量。
-  // 这里重新查一遍而不是用调用方手里的旧列表：确认框可能开了一会儿，用户中途关掉的
-  // 标签页不该算进「关掉了 N 个」里，也不该让 chrome.tabs.remove 报错。
-  async function closeMatching(pages) {
-    const targets = await matches(pages);
-    const ids = targets.map((tab) => tab.id).filter((id) => id != null);
+  // 全部相关标签页（两档合在一起）。给「只是想找出来」的调用方用，比如「关闭已打开」。
+  async function matches(pages) {
+    const { exact, fuzzy } = await inspect(pages);
+    return [...exact, ...fuzzy];
+  }
+
+  // 按给定的标签页关掉，返回实际关掉的数量。
+  async function closeTabs(tabs) {
+    const ids = (tabs || []).map((tab) => tab?.id).filter((id) => id != null);
     if (!ids.length) return 0;
     await chrome.tabs.remove(ids).catch(() => null);
     return ids.length;
   }
 
-  globalThis.LaterOnTabs = { comparable, findOpen, activate, matches, closeMatching, titleKey };
+  // 关掉这些网页对应的标签页（两档都关），返回实际关掉的数量。
+  // 这里重新查一遍而不是用调用方手里的旧列表：确认框可能开了一会儿，用户中途关掉的
+  // 标签页不该算进「关掉了 N 个」里，也不该让 chrome.tabs.remove 报错。
+  async function closeMatching(pages) {
+    return closeTabs(await matches(pages));
+  }
+
+  // ── 确认框里的清单 ─────────────────────────────────────
+  // 两档标签页 → 弹窗的只读清单（结构见 dialog.js 的 notice）。
+  // 放在这里而不是各页面各写一份：只有这个模块知道「exact / fuzzy」是怎么回事，
+  // 两个页面（全屏收藏库、侧边栏）都必须按同一套说法展示，否则同一件事两个界面两种解释。
+  const TAB_TITLE_MAX = 52;
+  function noticeEntries(tabs) {
+    return (tabs || []).map((tab) => {
+      const raw = String(tab.title || tab.url || "").trim();
+      let host = "";
+      try { host = new URL(tab.url || "").hostname.replace(/^www\./, ""); } catch { /* 没有域名就空着 */ }
+      return {
+        // 标题会很长，截断免得把弹窗撑成一整行；域名放右边当第二判据。
+        title: raw.length > TAB_TITLE_MAX ? `${raw.slice(0, TAB_TITLE_MAX)}…` : (raw || tr("itemFallback")),
+        meta: host,
+        hint: tab.url || ""
+      };
+    });
+  }
+
+  // closeFuzzy：把「仅标题相同」那档也说成会关（「关闭已打开」用的：用户要收干净整个项目，
+  // 两档都关，但必须让他看见有这一档）。
+  function noticeGroups(exact, fuzzy, options = {}) {
+    const groups = [];
+    if (exact?.length) {
+      groups.push({ tone: "close", title: tr("tabsWillClose", { n: exact.length }), items: noticeEntries(exact) });
+    }
+    if (fuzzy?.length) {
+      groups.push({
+        tone: options.closeFuzzy ? "close" : "keep",
+        title: options.closeFuzzy
+          ? tr("tabsWillCloseSameTitle", { n: fuzzy.length })
+          : tr("tabsKeepSameTitle", { n: fuzzy.length }),
+        items: noticeEntries(fuzzy)
+      });
+    }
+    return groups;
+  }
+
+  globalThis.LaterOnTabs = {
+    comparable, findOpen, activate, inspect, matches, closeTabs, closeMatching, titleKey,
+    noticeEntries, noticeGroups
+  };
 })();

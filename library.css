@@ -353,6 +353,25 @@ select:hover { border-color: var(--card-line); }
   background: rgba(255,92,53,.05);
 }
 .card.drag-preview { position: fixed; z-index: -1; top: 0; left: -10000px; margin: 0; pointer-events: none; opacity: 1; transform: none; box-shadow: 0 14px 30px rgba(33,29,20,.16); }
+/* ── 多选整组拖拽 ─────────────────────────────────────────
+   浏览器一次只允许挂一个 drag image，所以「一叠卡片」只能画在同一个浮层里：
+   最上面是卡片克隆，下面两层错开的空壳，右上角 +N。
+   列表里其余被选中的卡片原地缩小淡出，表示「已经收进这一叠」——
+   只用 transform + opacity（不占布局），所以上面那套坐标快照不会被打乱。 */
+.drag-group-preview { position: fixed; z-index: -1; top: 0; left: -10000px; margin: 0; pointer-events: none; }
+.drag-group-sheet { position: absolute; inset: 0; border-radius: var(--radius); background: var(--card); box-shadow: 0 10px 22px rgba(33,29,20,.14); }
+.drag-group-sheet.is-back { transform: translate(11px, 11px) rotate(1.6deg); opacity: .5; }
+.drag-group-sheet.is-mid { transform: translate(5px, 6px) rotate(.8deg); opacity: .8; }
+.drag-group-top { position: absolute; inset: 0; margin: 0; box-shadow: 0 16px 32px rgba(33,29,20,.18); }
+.drag-group-top .select-badge { display: none; }
+.drag-group-count {
+  position: absolute; top: -10px; right: -10px; z-index: 2;
+  display: grid; place-items: center; min-width: 27px; height: 27px; padding: 0 8px;
+  border-radius: 999px; background: var(--accent); color: #fff;
+  font-size: 12px; font-weight: 800; letter-spacing: .2px;
+  box-shadow: 0 8px 16px -6px rgba(255,80,50,.75);
+}
+.grid.is-group-dragging .card.selected:not(.dragging) { transform: scale(.93); opacity: .3; }
 /* 拖拽排序中：让位要跟手，默认 .28s 的过渡会显得拖沓。
    animation:none 是双保险——万一某张卡片的入场动画还没播完（0.4s 内就拖它），
    动画仍在覆盖 transform，这里直接掐断。 */
@@ -629,6 +648,17 @@ footer { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-it
 .select-mode { border: 1px solid var(--hairline-2); border-radius: 99px; padding: 7px 16px; background: var(--glass-strong); color: var(--chip-text); font-size: 12.5px; font-weight: 650; box-shadow: var(--shadow-sm); transition: background .15s, color .15s, box-shadow .15s; }
 .select-mode:hover { background: var(--field); }
 .select-mode.active { background: var(--accent); color: #fff; border-color: var(--accent); box-shadow: 0 6px 16px -6px rgba(255,80,50,.6); }
+/* 「退出多选」：多选时出现在「选择」右边，是这一状态的出口。
+   底部工具栏也有「完成」，但它 fixed 在窗口底部——滚动浏览时视线在上面，按它要先找。
+   这个按钮紧挨着「选择」，随时够得着。
+   display 是自己写的，所以必须自己补 [hidden]（浏览器默认规则压不过作者样式）。 */
+.exit-select {
+  border: 1px solid var(--hairline-2); border-radius: 99px; padding: 7px 14px;
+  background: var(--glass-strong); color: var(--chip-text); font-size: 12.5px; font-weight: 650;
+  box-shadow: var(--shadow-sm); transition: background .15s, color .15s, border-color .15s;
+}
+.exit-select:hover { background: var(--field); border-color: var(--accent); color: var(--accent); }
+.exit-select[hidden] { display: none; }
 /* 「关闭已打开」：这个项目的副作用操作，不是导航。和「选择」同族的胶囊，
    平时安静，悬停才染上橙色——它不该和主操作抢注意力。 */
 .close-tabs {

@@ -106,6 +106,23 @@
 }
 .lod-message[hidden] { display: none; }
 
+/* 只读清单：删收藏时列「会关掉的标签页」和「只是标题相同、不会关的」。
+   两档必须一眼分得开——会关的那组左侧一条危险色竖线，不会关的那组只是描边+压灰，
+   标题本身就写着「不会关闭」。以前全塞在 message 一句话里，用户根本数不出来。 */
+.lod-notice { display: grid; gap: 9px; }
+.lod-notice[hidden] { display: none; }
+.lod-notice-group { padding: 9px 11px; border-radius: 12px; background: var(--lod-soft); }
+.lod-notice-group[data-tone="close"] { box-shadow: inset 3px 0 0 var(--lod-danger); }
+.lod-notice-group[data-tone="keep"] { background: transparent; box-shadow: inset 0 0 0 1px var(--lod-line); }
+.lod-notice-title { margin: 0 0 5px; color: var(--lod-danger); font-size: 11.5px; font-weight: 750; }
+.lod-notice-group[data-tone="keep"] .lod-notice-title { color: var(--lod-muted); }
+.lod-notice-list { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; }
+.lod-notice-list li { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.lod-notice-name { min-width: 0; overflow: hidden; color: var(--lod-ink); font-size: 12.5px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
+.lod-notice-meta { flex: none; max-width: 46%; margin-left: auto; overflow: hidden; color: var(--lod-subtle); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.lod-notice-more { color: var(--lod-subtle); font-size: 11.5px; }
+.lod-notice-group[data-tone="keep"] .lod-notice-name { color: var(--lod-muted); }
+
 /* ── 表单模式（编辑标题 / 摘要）──────────────────────────── */
 .lod-fields { display: grid; gap: 12px; }
 .lod-fields[hidden] { display: none; }
