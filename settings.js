@@ -140,12 +140,15 @@ async function init() {
 
   // 导出收藏
   document.querySelector("#exportBtn").addEventListener("click", async () => {
-    const data = await chrome.storage.local.get(["laterOnItems", "laterOnProjects", "laterOnCovers", "laterOnOrder", "laterOnReadingPositions"]);
+    const data = await chrome.storage.local.get(["laterOnProjects", "laterOnCovers", "laterOnOrder", "laterOnReadingPositions"]);
+    // 摘要与封面按 id 分开存，导出时拼回完整条目 —— 备份格式（lateron-backup v2）一个字都不变，
+    // 新旧版本导出的文件互相都能导入。
+    const { items } = await LaterOnItemStore.load(chrome.storage.local);
     const payload = {
       type: "lateron-backup",
       version: 2,
       exportedAt: Date.now(),
-      items: data.laterOnItems || [],
+      items,
       projects: data.laterOnProjects || [],
       // 自定义封面本体不在 items 里（条目只存 local:// 指针），必须一起导出，
       // 否则换台设备恢复后所有自制封面都会变成坏图。
@@ -173,8 +176,9 @@ async function init() {
     try {
       const parsed = JSON.parse(await file.text());
       if (!parsed || !Array.isArray(parsed.items)) throw new Error(t("importBadFile"));
-      const existing = await chrome.storage.local.get(["laterOnItems", "laterOnProjects", "laterOnCovers", "laterOnOrder", "laterOnReadingPositions"]);
-      const byUrl = new Map((existing.laterOnItems || []).map((it) => [normalizeUrl(it.url), it]));
+      const existing = await chrome.storage.local.get(["laterOnProjects", "laterOnCovers", "laterOnOrder", "laterOnReadingPositions"]);
+      const { items: existingItems } = await LaterOnItemStore.load(chrome.storage.local);
+      const byUrl = new Map(existingItems.map((it) => [normalizeUrl(it.url), it]));
       let skipped = 0;
       for (const it of parsed.items) {
         // 备份文件可以被手工修改，不能把任意协议塞进收藏链接。
@@ -185,8 +189,10 @@ async function init() {
       const mergedItems = [...byUrl.values()];
       const projById = new Map((existing.laterOnProjects || []).map((p) => [p.id, p]));
       (parsed.projects || []).forEach((p) => { if (!projById.has(p.id)) projById.set(p.id, p); });
+      // 写回时再拆开：索引 + 详情表（这次导入后的全部条目都在 mergedItems 里，
+      // 所以详情表直接用它们重建）。
       await chrome.storage.local.set({
-        laterOnItems: mergedItems,
+        ...LaterOnItemStore.writePatch(mergedItems, {}),
         laterOnProjects: [...projById.values()],
         laterOnCovers: { ...(existing.laterOnCovers || {}), ...(parsed.covers || {}) },
         laterOnOrder: { ...(existing.laterOnOrder || {}), ...(parsed.order || {}) },
@@ -218,7 +224,10 @@ async function init() {
       confirmText: t("wipeConfirmBtn")
     });
     if (!confirmed) return;
-    await chrome.storage.local.remove(["laterOnCovers", "laterOnOrder", "laterOnCurrentItem", "laterOnReadingPositions"]);
+    // 摘要与封面在另一张表里，一并清掉。
+    await chrome.storage.local.remove([
+      "laterOnCovers", "laterOnOrder", "laterOnCurrentItem", "laterOnReadingPositions", LaterOnItemStore.DETAILS_KEY
+    ]);
     await chrome.storage.local.set({ laterOnItems: [] });
     try { localStorage.removeItem("laterOnPanelCache"); } catch { /* 清缓存失败不影响清空收藏 */ }
     await LaterOnDialog.alert({

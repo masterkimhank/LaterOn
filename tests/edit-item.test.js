@@ -15,6 +15,9 @@ const I18N_SOURCE = read("i18n.js");
 const DIALOG_SOURCE = read("dialog.js");
 const DIALOG_CSS = read("dialog.css");
 const LIBRARY_SOURCE = read("library.js");
+// library.html 会先加载 item-store.js（摘要 / 封面存在另一张表里），这里照实装上，
+// 否则改摘要只写进了详情表、页面却还拿着兜底版，卡片上看不到变化。
+const ITEM_STORE_SOURCE = read("item-store.js");
 const LIBRARY_HTML = read("library.html");
 
 let failures = 0;
@@ -245,6 +248,7 @@ async function partLibrary() {
   window.eval(I18N_SOURCE);
   window.eval(DIALOG_SOURCE);
   require('./helpers/item-mutation')(window);
+  window.eval(ITEM_STORE_SOURCE);
   window.eval(LIBRARY_SOURCE);
 
   const tick = (ms = 20) => new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -278,8 +282,11 @@ async function partLibrary() {
   await tick(300);
 
   const saved = store.laterOnItems.find((entry) => entry.id === "item-1");
+  // 摘要存在 laterOnItemDetails 里，索引中不再有 description —— 要按 id 去详情表看。
+  const storedDesc = (id) => store.laterOnItemDetails?.[id]?.description;
   check("新标题写进了收藏库", saved?.title === "我重写的标题", saved?.title);
-  check("新摘要写进了收藏库", saved?.description === "我补的摘要", saved?.description);
+  check("新摘要写进了收藏库", storedDesc("item-1") === "我补的摘要", storedDesc("item-1"));
+  check("摘要没留在索引里", !("description" in (saved || {})));
   check("标题标记为「用户改过」", saved?.titleEdited === true, String(saved?.titleEdited));
   check("摘要标记为「用户改过」", saved?.descriptionEdited === true, String(saved?.descriptionEdited));
   check("卡片上的标题立刻变了", titleOf("item-1") === "我重写的标题", titleOf("item-1"));
@@ -293,7 +300,7 @@ async function partLibrary() {
   click(visible().querySelector(".lod-ok"));
   await tick(300);
   const cleared = store.laterOnItems.find((entry) => entry.id === "item-1");
-  check("摘要清空后回落到「暂无摘要」", cleared?.description === "暂无摘要", cleared?.description);
+  check("摘要清空后回落到「暂无摘要」", storedDesc("item-1") === "暂无摘要", storedDesc("item-1"));
   check("清空时也标记为「用户改过」（以后不会被自动填充顶掉）", cleared?.descriptionEdited === true);
 
   // Esc 取消：什么都不该改。

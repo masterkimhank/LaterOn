@@ -1,4 +1,22 @@
 const STORAGE_KEY = "laterOnItems";
+// 摘要与封面按 id 单独一个键存（见 item-store.js）；索引里只有轻量字段。
+// 兜底那半边是给「只 eval 了本文件」的测试环境用的：退化成不拆分。
+const ItemStore = window.LaterOnItemStore || {
+  DETAILS_KEY: "laterOnItemDetails",
+  DETAIL_FIELDS: [],
+  splitItem(item) { return { index: item, detail: null }; },
+  indexOf(list) { return list; },
+  detailsOf() { return {}; },
+  hydrateItem(item) { return item; },
+  hydrate(index) { return Array.isArray(index) ? index : []; },
+  writePatch(list) { return { laterOnItems: list }; },
+  async load(local) {
+    // 按数组读：测试桩都按「一次要几个键」实现，传字符串会读空。
+    const stored = await local.get(["laterOnItems", "laterOnItemDetails"]);
+    const index = Array.isArray(stored?.laterOnItems) ? stored.laterOnItems : [];
+    return { index, details: {}, items: index };
+  }
+};
 const PROJECTS_KEY = "laterOnProjects";
 const ACTIVE_PROJECT_KEY = "laterOnActiveProject";
 const SETTINGS_KEY = "laterOnSettings";
@@ -303,8 +321,12 @@ async function init() {
   const storageStart = nowMs();
   // 封面（COVERS_KEY）故意不在这批里：它可能比整个列表还大，
   // 排在首屏之后单独读，列表才能最快出来。
-  const storedPromise = chrome.storage.local
-    .get([STORAGE_KEY, PROJECTS_KEY, ACTIVE_PROJECT_KEY, CURRENT_ITEM_KEY, SETTINGS_KEY, FILTER_KEY, FILTER_CHOSEN_KEY, ORDER_KEY])
+  const storedPromise = Promise.all([
+    chrome.storage.local.get([PROJECTS_KEY, ACTIVE_PROJECT_KEY, CURRENT_ITEM_KEY, SETTINGS_KEY, FILTER_KEY, FILTER_CHOSEN_KEY, ORDER_KEY]),
+    // 索引 + 每条的摘要/封面（后者按 id 分开存，这里一次读完）。
+    ItemStore.load(chrome.storage.local)
+  ])
+    .then(([meta, loaded]) => ({ ...meta, __loaded: loaded }))
     .catch((error) => ({ __laterOnLoadError: String(error?.message || error || "读取失败") }));
 
   // ② 读「秒开缓存」并立刻画第一屏：上一回的列表快照就在本页 localStorage 里，
@@ -343,13 +365,15 @@ async function init() {
       : tr("loadFailedRetry");
     return;
   }
+  const loaded = stored.__loaded || { index: [], items: [] };
   const migrateStart = nowMs();
-  const migrated = await migrateLegacyCovers(stored[STORAGE_KEY]);
+  const migrated = await migrateLegacyCovers(loaded.items);
   seg.migrate = Math.round(nowMs() - migrateStart);
-  // 读回来的这批数据有多大？体积是「读数据慢」最常见的解释——
-  // 早期版本把封面 base64 直接塞在条目里，能塞到好几兆，读完必然慢。
-  try { seg.bytes = JSON.stringify(stored[STORAGE_KEY] || []).length; } catch { /* 量不出来就不量 */ }
-  items = normalizeItems(migrated || stored[STORAGE_KEY]);
+  // 读回来的索引有多大？体积是「读数据慢」最常见的解释——
+  // 早期版本把封面 base64 直接塞在条目里，能塞到好几兆。
+  // 现在摘要与封面另存，这个数字只代表索引部分。
+  try { seg.bytes = JSON.stringify(loaded.index || []).length; } catch { /* 量不出来就不量 */ }
+  items = normalizeItems(migrated || loaded.items);
   archivedProjectIds = new Set((stored[PROJECTS_KEY] || []).filter((project) => project.archived).map((project) => project.id));
   projects = (stored[PROJECTS_KEY] || []).filter((project) => !project.archived);
   activeProject = normalizeProject(stored[ACTIVE_PROJECT_KEY]);
@@ -379,26 +403,75 @@ async function init() {
   loadCurrentPage();
 }
 
+// 存储里的索引变了（标已读、改标题、挪项目、增删条目…）。
+// 索引里没有摘要与封面，得先按 id 把内存里的那份接回去；只有「这次新出现的 id」
+// 才去读详情键 —— 常规操作（标已读、拖顺序）因此不用多读任何东西。
+let indexChangeToken = 0;
+async function applyIndexChange(nextIndex) {
+  const token = ++indexChangeToken;
+  const previous = new Map(items.map((item) => [item.id, item]));
+  const missing = [];
+  const merged = normalizeItems(nextIndex).map((entry) => {
+    // 老数据把摘要/封面存在索引条目里，直接就能用。
+    if (!entry || entry.description !== undefined || entry.image !== undefined) return entry;
+    const old = previous.get(entry.id);
+    if (!old) {
+      if (entry.id) missing.push(entry.id);
+      return entry;
+    }
+    return { ...entry, description: old.description, image: old.image };
+  });
+  if (missing.length) {
+    try {
+      const stored = await chrome.storage.local.get(ItemStore.DETAILS_KEY);
+      const details = (stored && stored[ItemStore.DETAILS_KEY]) || {};
+      const wanted = new Set(missing);
+      for (let i = 0; i < merged.length; i += 1) {
+        if (!wanted.has(merged[i]?.id)) continue;
+        merged[i] = ItemStore.hydrateItem(merged[i], details[merged[i].id]);
+      }
+    } catch { /* 读不到就先这样，下一次变更还会再补 */ }
+  }
+  // 期间又来了更新的变更：让它去落，别用旧快照覆盖。
+  if (token !== indexChangeToken) return;
+  // 增量：纯展示字段变化且无增删时只更新受影响卡片，否则全量 render。
+  const diff = diffItemsForIncremental(items, merged);
+  items = merged;
+  if (diff.safe && diff.changedIds.size > 0) {
+    for (const id of diff.changedIds) {
+      const article = itemMap.get(id);
+      if (article) {
+        const item = items.find((entry) => entry.id === id);
+        if (item) updateItemCard(article, item);
+      }
+    }
+  } else {
+    render();
+  }
+  renderProjectFilters();
+  // 阅读状态等数据刷新不能按旧标签页覆盖用户刚选择的项目。
+  if (currentItem?.url) syncCurrentTabItem(currentItem.url, { followProject: false });
+}
+
+// 详情表变了（改摘要、换封面）：索引没动，就地把内存里那几条补上再重画。
+function applyDetailChanges(detailMap) {
+  if (!detailMap || typeof detailMap !== "object") return;
+  let touched = false;
+  for (let i = 0; i < items.length; i += 1) {
+    const detail = detailMap[items[i].id];
+    if (!detail) continue;
+    items[i] = ItemStore.hydrateItem(items[i], detail);
+    touched = true;
+  }
+  if (touched) render();
+}
+
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes[STORAGE_KEY]) {
-    const next = normalizeItems(changes[STORAGE_KEY].newValue || []);
-    // 增量：纯展示字段变化且无增删时只更新受影响卡片，否则全量 render。
-    const diff = diffItemsForIncremental(items, next);
-    items = next;
-    if (diff.safe && diff.changedIds.size > 0) {
-      for (const id of diff.changedIds) {
-        const article = itemMap.get(id);
-        if (article) {
-          const item = items.find((entry) => entry.id === id);
-          if (item) updateItemCard(article, item);
-        }
-      }
-    } else {
-      render();
-    }
-    renderProjectFilters();
-    // 阅读状态等数据刷新不能按旧标签页覆盖用户刚选择的项目。
-    if (currentItem?.url) syncCurrentTabItem(currentItem.url, { followProject: false });
+    applyIndexChange(changes[STORAGE_KEY].newValue || []);
+  }
+  if (area === "local" && changes[ItemStore.DETAILS_KEY]) {
+    applyDetailChanges(changes[ItemStore.DETAILS_KEY].newValue);
   }
   if (area === "local" && changes[COVERS_KEY]) {
     covers = changes[COVERS_KEY].newValue || {};
@@ -1444,10 +1517,11 @@ async function migrateLegacyCovers(rawItems) {
   });
   if (!changed) return null;
   try {
-    const stored = await chrome.storage.local.get(COVERS_KEY);
+    const stored = await chrome.storage.local.get([COVERS_KEY, ItemStore.DETAILS_KEY]);
     const merged = { ...(stored[COVERS_KEY] || {}), ...moved };
     covers = merged;
-    await chrome.storage.local.set({ [STORAGE_KEY]: next, [COVERS_KEY]: merged });
+    // writePatch 会把改过的 image、以及其它条目已有的摘要一起拼好。
+    await chrome.storage.local.set({ ...ItemStore.writePatch(next, stored[ItemStore.DETAILS_KEY]), [COVERS_KEY]: merged });
   } catch { /* 搬不动就先用老数据，不影响显示 */ }
   return next;
 }
@@ -1710,7 +1784,8 @@ async function commitItemMutation(operation, ids, patch) {
   try {
     const response = await chrome.runtime.sendMessage({ type: "MUTATE_ITEMS", operation, ids: [...ids], patch });
     if (!response?.ok || !Array.isArray(response.items)) throw new Error(response?.error || "Item write failed");
-    items = normalizeItems(response.items);
+    // 回来的是索引；摘要 / 封面在详情表里，用内存里现成的补齐，再叠上这次改到的几条。
+    items = ItemStore.hydrate(normalizeItems(response.items), { ...ItemStore.detailsOf(items), ...(response.details || {}) });
     covers = response.covers || {};
     render();
     renderProjectFilters();

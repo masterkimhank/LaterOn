@@ -24,6 +24,7 @@
 | — | 2026-10-29 | 新功能 | 侧栏补上「关闭已打开」（收藏不删） | `sidepanel.html` `sidepanel.css` `sidepanel.js` | `sidepanel-close-tabs.test.js`（24 项）、e2e 新 spec（21 项） |
 | — | 2026-10-29 | 性能优化 | 收藏库卡片分页：首屏一页 + 滚到底续画 | `library.js` `library.html` `library.css` `i18n.js` | `library-load-more.test.js`（30 项）、e2e 新 spec（12 项）、`card-order.test.js` 追加 7 项 |
 | — | 2026-10-29 | 修复 | 同一篇文章的另一种网址被当成新条目（同站点 + 同标题 + 路径相近） | `url-utils.js` `background.js` | `article-identity.test.js`（9 组） |
+| — | 2026-10-29 | 性能优化 | 收藏数据分两处存（索引 + 详情表），写一条不再重写整表 | `item-store.js` `background.js` `library.js` `sidepanel.js` `settings.js` `webdav-sync.js` | `item-store.test.js`（36 项） |
 
 ---
 
@@ -786,8 +787,88 @@ YouTube 视频 ID），对「同一篇内容挂着两个结构上完全不同的
 
 ---
 
+## 未发布 — 收藏数据分两处存（2026-10-29）
+
+**来源**：待办表里最后一条「P1：列表 / 详情分离 + 单条写单条」。
+
+**根因**：`laterOnItems` 是**整表一个键**。`chrome.storage.local.set` 的最小单位就是键，
+所以「把 1 条标成已读」= 把 700 条重新序列化一遍写回去。而一条收藏里最占地方的是
+`description`（一百多字）与 `image`（封面地址），这两个字段只在「画卡片」和「改摘要 / 封面」
+时才用得上；标已读、挪项目、拖顺序、判断搜索命中，全都不需要它们，却每次都被一起搬。
+
+按 700 条模拟数据实测（JSON 字节）：
+
+| | 字节 | 占完整条目 |
+|---|---|---|
+| 完整条目（改动前每次写入的量） | 399,784 | 100% |
+| 索引（只留轻量字段） | 190,669 | 48% |
+| 详情表（摘要 + 封面） | 218,880 | 55% |
+
+两张表相加略超 100%，因为详情表按 id 又包了一层 key。
+
+**待办里「345KB → ~80KB」的估算是乐观的**：`url` / `title` / `id` / `savedAt` / `status` /
+`projectId` / `favicon` 本来就都得留在索引里（搜索、去重、标签页匹配全指着它们），摘要与封面
+合起来只占一半上下。实际拿到的是：标已读、挪项目、拖顺序这类高频写从 400KB 降到 191KB；
+改一条摘要从 400KB 降到 219KB，而且完全不碰索引。要再往下压就得把 `url` / `title` 也挪走，
+那就得给搜索和去重再造一套倒排索引，代价不成比例，到此为止。
+
+**改法**：
+
+1. 新增 `item-store.js`（IIFE，挂 `globalThis.LaterOnItemStore`），background / library /
+   sidepanel / settings / webdav-sync 共用：`splitItem`（完整条目 → 索引 + 详情）、`indexOf`、
+   `detailsOf`、`hydrateItem` / `hydrate`（读回来拼成完整条目，**详情缺字段时沿用索引里的**，
+   这就是老数据的兼容路径）、`writePatch`（一次 set 需要的两个键）、`load`（一次读两个键）。
+   **为什么是一张表而不是「一条一个键」**：WebDAV 同步与导出都按「键」组织（`webdav-sync-core`
+   的 `KEYS` 是固定数组），一条一个键就得在同步层枚举成千上万个键，换来的只是「改一条摘要
+   少写一百多 KB」——而改摘要本来就不是高频操作。
+2. `background.js`：`mutateItems` 把 patch 里的详情字段拆到 `detailPatch` 只写详情表；删除时
+   同一次 set 里把详情表对应项也删掉；被改动到的条目顺手把索引里遗留的详情字段剥掉（值在同
+   一批写进详情表，不丢）；`purgeExpiredItemsNow` 清过期条目时连详情一起清；新增
+   `migrateLegacyDetails()`（幂等，先写详情后写索引，中途失败也只是详情表多几条，不会丢摘要），
+   启动时排进同一条写队列执行；`saveItem` / `runBatchSave` 改用 `load()` 拿完整条目、
+   `writePatch()` 写回；omnibox 搜索与选择浮层改用 `load()`。
+3. `library.js` / `sidepanel.js`：初始化一次读两个键；`onChanged` 分两条路——索引变了就用内存里
+   现成的详情补齐，只对**新出现的 id** 读一次详情表（带 token 防乱序），详情表变了就按 id 覆盖。
+4. **同步与导入导出的边界拼合**：`webdav-sync.js` 内部只认完整条目，`readKeys` / `commit` 两头
+   拆开拼上——云端文件与导出 JSON 的格式一个字没改，`lateron-backup` v2 照旧。
+   `settings.js` 导出用 `load()`，导入用 `writePatch()`，清空时连详情表一起 `remove`。
+
+**踩到的坑**
+
+1. **只回索引，页面立刻画回旧封面**。`MUTATE_ITEMS` 改成只返回索引后，页面 `items` 里就没了
+   `description` / `image`，「移除封面」明明写进了库，卡片还显示旧图，要等 `onChanged` 才纠正。
+   改法：后台在响应里多带一份 `details`（**只含这次真改到的那几条**，不回整表），页面用
+   `detailsOf(items)` 的内存值打底再叠加它。
+2. **剥字段等于删数据**。索引里剥掉 `description` / `image` 时，老数据的值如果不在详情表里，
+   剥完就真没了。所以只在「这条被改动」时剥，且同一个 `set` 里把它的详情写进详情表。
+3. **只加载 `library.js` 的 DOM 测试全红**（14 个文件）。页头那个「缺模块就退化成不拆分」的
+   兜底对象漏了新加的方法，`ItemStore.hydrate is not a function` 被 `commitItemMutation` 的
+   `catch` 吞掉，界面只弹「操作失败，请重试」。兜底对象要跟着模块一起长。
+4. **共享测试桩只抠 `mutateItems` 那段源码**（`tests/helpers/item-mutation.js`），它把函数体
+   单独放进一个干净上下文跑，没有 `ItemStore` → 一改摘要就抛错。桩里也得先跑
+   `item-store.js` 并 `const ItemStore = globalThis.LaterOnItemStore`。
+5. **兜底 `load()` 传字符串键**，而测试桩都按「传数组」实现，读出来是空的（地址栏搜索那条
+   用例整页没卡片）。统一按数组读。
+6. **`background.js` 体积预算**：96,000 → 102,000（认人 + 拆分共 +5.1KB）。守的底线没变——
+   网页内执行的大函数一条都不许搬回 service worker（三条断言还在）。
+
+**文件**：`item-store.js`（新增）、`background.js`、`library.js`、`sidepanel.js`、`settings.js`、
+`webdav-sync.js`、`library.html` / `sidepanel.html` / `settings.html`（各加一行 `<script>`）、
+`tests/item-store.test.js`（新增）、`tests/helpers/item-mutation.js`、`tests/cover-upload.test.js`、
+`tests/edit-item.test.js`、`tests/sidepanel-delete.test.js`、`tests/background-modules.test.js`、
+`tests/e2e/save-current-page.spec.js`。
+
+**验证**
+
+- `node scripts/test-all.js` → **76/76 文件通过**，51 秒（新增 `item-store.test.js`，36 项断言）。
+- `node scripts/test-e2e.js` → **6/6 spec 通过**，104 秒。其中「收藏当前网页」那条的断言改成
+  去详情表看封面与摘要，并新增一条「索引里不再带摘要 / 封面」。
+- 反证一：`splitItem` 直接 `return { index: item, detail: null }`（等于不拆分）→
+  `item-store.test.js`、`cover-upload.test.js`、`edit-item.test.js` 三份全部退出码 1。
+- 反证二：`migrateLegacyDetails` 开头 `return 0`（等于不迁移）→ 迁移那组断言报红、退出码 1。
+
+---
+
 ## 待办（已提出、尚未实施）
 
-| 项 | 说明 |
-|---|---|
-| P1：列表 / 详情分离 + 单条写单条 | `laterOnItems` 只留索引字段，摘要与封面按 id 分键；单键 345KB → ~80KB。需写数据迁移与老导出文件兼容 |
+暂无。

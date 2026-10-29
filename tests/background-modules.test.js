@@ -22,8 +22,10 @@ const backgroundBytes = Buffer.byteLength(background.replace(/\r\n/g, "\n"));
 // （GBK / Big5 站点按站点自己的编码解码）都在这个文件里，加了约 6.8KB。
 // 预算 90000 → 96000：1.71.0 起「收藏时看到的标题」要一直留着（titleAtSave 快照 +
 // 失效页标题的识别与拦截），又加了约 3.9KB。
+// 预算 96000 → 102000：同一篇文章认人（siteKey / titleKey / pathsAlike 三道判断、
+// 四处调用点统一）与「索引 / 详情分开存」的读写改造，加了约 5.1KB。
 // 仍然守住的底线是：网页内执行的大函数一律不许搬回来（下面三条断言）。
-assert.ok(backgroundBytes < 96000, `background.js 重新膨胀到 ${backgroundBytes} bytes`);
+assert.ok(backgroundBytes < 102000, `background.js 重新膨胀到 ${backgroundBytes} bytes`);
 
 assert.ok(metadata.includes("function extractPageMetadataForShortcut"));
 assert.ok(translation.includes("function togglePageTranslation"));

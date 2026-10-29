@@ -82,8 +82,13 @@ const ARTICLE_TITLE = "端到端测试文章";
     c.check("网址是文章页的绝对地址", saved.url === articleUrl, saved.url);
     c.check("状态默认是未读", saved.status === "unread", saved.status);
     c.check("来源是站点域名", String(saved.source).includes("127.0.0.1"), saved.source);
-    c.check("抓到了 og:image 当封面", String(saved.image).includes("cover-transparent.png"), saved.image || "(空)");
-    c.check("摘要抓到了 description", String(saved.description).includes("这段摘要"), saved.description);
+    // 摘要与封面存在另一张表（laterOnItemDetails），索引里只有轻量字段。
+    const details = (await getStorage(api, "laterOnItemDetails")).laterOnItemDetails || {};
+    const detail = details[saved.id] || {};
+    c.check("索引里不再带摘要 / 封面", !("description" in saved) && !("image" in saved),
+      Object.keys(saved).join(","));
+    c.check("抓到了 og:image 当封面", String(detail.image).includes("cover-transparent.png"), detail.image || "(空)");
+    c.check("摘要抓到了 description", String(detail.description).includes("这段摘要"), detail.description);
 
     // ── 4. 侧栏把这条画出来，封面真的解码成功 ────────────
     await waitFor(() => panel.locator(".item").count().then((n) => n === 1), { message: "侧栏出现新收藏" });

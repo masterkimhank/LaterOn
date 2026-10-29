@@ -1,4 +1,22 @@
 const STORAGE_KEY = "laterOnItems";
+// 摘要与封面按 id 单独一个键存（见 item-store.js）；索引里只有轻量字段。
+// 兜底那半边是给「只 eval 了本文件」的测试环境用的：退化成不拆分，而不是直接报错。
+const ItemStore = window.LaterOnItemStore || {
+  DETAILS_KEY: "laterOnItemDetails",
+  DETAIL_FIELDS: [],
+  splitItem(item) { return { index: item, detail: null }; },
+  indexOf(list) { return list; },
+  detailsOf() { return {}; },
+  hydrateItem(item) { return item; },
+  hydrate(index) { return Array.isArray(index) ? index : []; },
+  writePatch(list) { return { laterOnItems: list }; },
+  async load(local) {
+    // 按数组读：测试桩都按「一次要几个键」实现，传字符串会读空。
+    const stored = await local.get(["laterOnItems", "laterOnItemDetails"]);
+    const index = Array.isArray(stored?.laterOnItems) ? stored.laterOnItems : [];
+    return { index, details: {}, items: index };
+  }
+};
 const PROJECTS_KEY = "laterOnProjects";
 const ACTIVE_PROJECT_KEY = "laterOnActiveProject";
 const SETTINGS_KEY = "laterOnSettings";
@@ -256,10 +274,11 @@ async function migrateLegacyCovers(rawItems) {
   });
   if (!changed) return null;
   try {
-    const stored = await chrome.storage.local.get(COVERS_KEY);
+    const stored = await chrome.storage.local.get([COVERS_KEY, ItemStore.DETAILS_KEY]);
     const merged = { ...(stored[COVERS_KEY] || {}), ...moved };
     covers = merged;
-    await chrome.storage.local.set({ [STORAGE_KEY]: next, [COVERS_KEY]: merged });
+    // writePatch 会把改过的 image、以及其它条目已有的摘要一起拼好。
+    await chrome.storage.local.set({ ...ItemStore.writePatch(next, stored[ItemStore.DETAILS_KEY]), [COVERS_KEY]: merged });
   } catch { /* 搬不动就先用老数据，不影响显示 */ }
   return next;
 }
@@ -375,17 +394,21 @@ async function setFilter(value) {
 async function init() {
   await window.LaterOnI18n?.getLanguage();
   window.LaterOnI18n?.applyStatic();
-  const [result, activeTabs] = await Promise.all([
-    chrome.storage.local.get([STORAGE_KEY, PROJECTS_KEY, ACTIVE_PROJECT_KEY, SETTINGS_KEY, CURRENT_ITEM_KEY, FILTER_KEY, FILTER_CHOSEN_KEY, ORDER_KEY, COVERS_KEY]),
+  const [result, loaded, activeTabs] = await Promise.all([
+    chrome.storage.local.get([PROJECTS_KEY, ACTIVE_PROJECT_KEY, SETTINGS_KEY, CURRENT_ITEM_KEY, FILTER_KEY, FILTER_CHOSEN_KEY, ORDER_KEY, COVERS_KEY]),
+    // 索引 + 每条的摘要/封面（后者按 id 分开存，这里一次读完）。
+    ItemStore.load(chrome.storage.local),
     chrome.tabs.query({ active: true, currentWindow: true })
   ]);
   covers = result[COVERS_KEY] || {};
-  const migrated = await migrateLegacyCovers(result[STORAGE_KEY]);
-  const rawItems = migrated || result[STORAGE_KEY] || [];
+  // 老版本把封面整块塞在条目里，先搬出去；搬完给的是完整条目。
+  const migrated = await migrateLegacyCovers(loaded.items);
+  const rawItems = migrated || loaded.items;
   items = normalizeItems(rawItems);
   // 补齐的 doneAt 要写回存储，否则下次打开又变回「没有时间」，永远不会被清除。
+  // 只写索引：摘要/封面在各自的键上，别在这里重写一遍。
   if (items.some((item, i) => item.doneAt && !Number(rawItems[i]?.doneAt))) {
-    chrome.storage.local.set({ [STORAGE_KEY]: items });
+    chrome.storage.local.set({ [STORAGE_KEY]: ItemStore.indexOf(items) });
   }
   projects = sortPinnedFirst(result[PROJECTS_KEY] || []);
   // 首屏卡片建出来时自己就会把下拉填对，初始化这次 render 不必再全量重建一遍下拉
@@ -431,26 +454,75 @@ async function init() {
   renderProjects();
 }
 
+// 存储里的索引变了（标已读、改标题、挪项目、增删条目…）。
+// 索引里没有摘要与封面，得先按 id 把内存里的那份接回去；只有「这次新出现的 id」
+// 才去读详情键 —— 常规操作（标已读、拖顺序）因此不用多读任何东西。
+let indexChangeToken = 0;
+async function applyIndexChange(nextIndex) {
+  const token = ++indexChangeToken;
+  const previous = new Map(items.map((item) => [item.id, item]));
+  const missing = [];
+  const merged = normalizeItems(nextIndex).map((entry) => {
+    // 老数据把摘要/封面存在索引条目里，直接就能用。
+    if (!entry || entry.description !== undefined || entry.image !== undefined) return entry;
+    const old = previous.get(entry.id);
+    if (!old) {
+      if (entry.id) missing.push(entry.id);
+      return entry;
+    }
+    return { ...entry, description: old.description, image: old.image };
+  });
+  if (missing.length) {
+    try {
+      const stored = await chrome.storage.local.get(ItemStore.DETAILS_KEY);
+      const details = (stored && stored[ItemStore.DETAILS_KEY]) || {};
+      const wanted = new Set(missing);
+      for (let i = 0; i < merged.length; i += 1) {
+        if (!wanted.has(merged[i]?.id)) continue;
+        merged[i] = ItemStore.hydrateItem(merged[i], details[merged[i].id]);
+      }
+    } catch { /* 读不到就先这样，下一次变更还会再补 */ }
+  }
+  // 期间又来了更新的变更：让它去落，别用旧快照覆盖。
+  if (token !== indexChangeToken) return;
+  // 增量：只有「纯展示字段」变了（改标题/摘要/封面/换 favicon）且没增删，
+  // 才只更新受影响的卡片；否则（标已读、挪项目、增删、换排序字段）走全量。
+  const diff = diffItemsForIncremental(items, merged);
+  items = merged;
+  if (diff.safe && diff.changedIds.size > 0) {
+    // 集合、顺序、计数都没变，只把这几张卡的内容刷新即可。
+    for (const id of diff.changedIds) {
+      const card = cardMap.get(id);
+      if (card) {
+        const item = items.find((entry) => entry.id === id);
+        if (item) updateCard(card, item);
+      }
+    }
+  } else {
+    render();
+  }
+  renderProjects();
+}
+
+// 详情表变了（改摘要、换封面）：索引没动，就地把内存里那几条补上再重画。
+function applyDetailChanges(detailMap) {
+  if (!detailMap || typeof detailMap !== "object") return;
+  let touched = false;
+  for (let i = 0; i < items.length; i += 1) {
+    const detail = detailMap[items[i].id];
+    if (!detail) continue;
+    items[i] = ItemStore.hydrateItem(items[i], detail);
+    touched = true;
+  }
+  if (touched) render();
+}
+
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes[STORAGE_KEY]) {
-    const next = normalizeItems(changes[STORAGE_KEY].newValue || []);
-    // 增量：只有「纯展示字段」变了（改标题/摘要/封面/换 favicon）且没增删，
-    // 才只更新受影响的卡片；否则（标已读、挪项目、增删、换排序字段）走全量。
-    const diff = diffItemsForIncremental(items, next);
-    items = next;
-    if (diff.safe && diff.changedIds.size > 0) {
-      // 集合、顺序、计数都没变，只把这几张卡的内容刷新即可。
-      for (const id of diff.changedIds) {
-        const card = cardMap.get(id);
-        if (card) {
-          const item = items.find((entry) => entry.id === id);
-          if (item) updateCard(card, item);
-        }
-      }
-    } else {
-      render();
-    }
-    renderProjects();
+    applyIndexChange(changes[STORAGE_KEY].newValue || []);
+  }
+  if (area === "local" && changes[ItemStore.DETAILS_KEY]) {
+    applyDetailChanges(changes[ItemStore.DETAILS_KEY].newValue);
   }
   if (area === "local" && changes[COVERS_KEY]) {
     covers = changes[COVERS_KEY].newValue || {};
@@ -2407,7 +2479,8 @@ async function deleteProject(id) {
   orders = Object.fromEntries(Object.entries(orders)
     .filter(([scope]) => scope !== id)
     .map(([scope, ids]) => [scope, ids.filter((itemId) => !deletedIds.has(itemId))]));
-  const patch = { [PROJECTS_KEY]: projects, [STORAGE_KEY]: items, [COVERS_KEY]: covers, [ORDER_KEY]: orders };
+  // 删项目会连带删掉里面的收藏：详情表也得跟着重建（只留剩下的这些）。
+  const patch = { [PROJECTS_KEY]: projects, ...ItemStore.writePatch(items, {}), [COVERS_KEY]: covers, [ORDER_KEY]: orders };
   if (deletedIds.has(currentItemId)) patch[CURRENT_ITEM_KEY] = null;
   await chrome.storage.local.set(patch);
   if (activeProject === id) {
@@ -2650,7 +2723,9 @@ async function commitItemMutation(operation, ids, patch) {
   try {
     const response = await chrome.runtime.sendMessage({ type: "MUTATE_ITEMS", operation, ids: [...ids], patch });
     if (!response?.ok || !Array.isArray(response.items)) throw new Error(response?.error || "Item write failed");
-    items = normalizeItems(response.items);
+    // 回来的是索引（摘要 / 封面在详情表里，后台不回整表）。用内存里现成的补齐，
+    // 再叠上这次真改到的那几条——否则刚改完封面会先画回旧图，等 onChanged 才纠正。
+    items = ItemStore.hydrate(normalizeItems(response.items), { ...ItemStore.detailsOf(items), ...(response.details || {}) });
     covers = response.covers || {};
     render();
     renderProjects();

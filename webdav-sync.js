@@ -13,6 +13,20 @@
 //   · 服务器不给 ETag 时退化成「回读比对」，并在状态里标记，不假装有并发保护
 (function () {
   const Core = globalThis.LaterOnSyncCore;
+  // 存储里摘要与封面在另一张表（见 item-store.js）；同步层只认「完整条目」，
+  // 所以进出这里都要拼好 / 拆开。内核（Core）完全不知道有拆分这回事。
+  const ItemStore = globalThis.LaterOnItemStore || {
+    DETAILS_KEY: "laterOnItemDetails",
+    hydrate(index) { return Array.isArray(index) ? index : []; },
+    indexOf(items) { return items; },
+    detailsOf() { return {}; }
+  };
+  const readKeys = () => [...Core.KEYS, ItemStore.DETAILS_KEY];
+  // 把存储里读出来的「索引 + 详情表」拼成完整条目。
+  const fullItems = (stored) => ItemStore.hydrate(
+    Array.isArray(stored?.laterOnItems) ? stored.laterOnItems : [],
+    (stored && stored[ItemStore.DETAILS_KEY]) || {}
+  );
   const CONFIG = "laterOnWebDAV", STATE = "laterOnSyncState", STATUS = "laterOnSyncStatus";
   const APPLIED = "laterOnSyncApplied", ALARM = "laterOnWebDAVSync";
   const QUIET = "laterOnSyncQuietUntil", LOCAL_IDLE_MS = 30000;
@@ -70,22 +84,31 @@
   // 一次提交写三样东西：同步日志（STATE）、本地数据（变了才写）、以及「这是我写的」标记。
   async function commit(doc, device, base) {
     const next = Core.materialize(doc);
-    const current = await chrome.storage.local.get(Core.KEYS);
+    const current = await chrome.storage.local.get(readKeys());
     const patch = { [STATE]: { device, doc }, [APPLIED]: crypto.randomUUID(), [QUIET]: quietUntil };
     if (base) patch[BASE] = base;
     for (const key of Core.KEYS) {
-      if (!Core.equal(current[key] ?? (Array.isArray(next[key]) ? [] : {}), next[key])) patch[key] = next[key];
+      // 比较的两边都得是完整条目：存储里的那份要先拼回来，否则永远「不相等」、每次都写一遍。
+      const currentValue = key === "laterOnItems"
+        ? fullItems(current)
+        : (current[key] ?? (Array.isArray(next[key]) ? [] : {}));
+      if (!Core.equal(currentValue, next[key])) patch[key] = next[key];
+    }
+    if (patch.laterOnItems) {
+      // 落盘时再拆回「索引 + 详情表」。
+      patch[ItemStore.DETAILS_KEY] = ItemStore.detailsOf(next.laterOnItems);
+      patch.laterOnItems = ItemStore.indexOf(next.laterOnItems);
     }
     await chrome.storage.local.set(patch);
   }
 
   // 从 storage 读出「当前应该是什么」，并补上可能没记进日志的本地改动。
   async function readCurrentState() {
-    const stored = await chrome.storage.local.get([...Core.KEYS, STATE]);
+    const stored = await chrome.storage.local.get([...readKeys(), STATE]);
     const state = stored[STATE];
     if (!state) throw new Error("syncLocalError");
     const data = Object.fromEntries(Core.KEYS.map((key) => [
-      key, stored[key] ?? (key === "laterOnItems" || key === "laterOnProjects" ? [] : {})
+      key, key === "laterOnItems" ? fullItems(stored) : (stored[key] ?? (key === "laterOnProjects" ? [] : {}))
     ]));
     // 用户写入之后、日志落盘之前 worker 被挂掉时，这里把差额补记成一次本地改动。
     // 数据和日志是同一次 set 写的，所以任何差异都只可能来自本地编辑。
@@ -94,13 +117,13 @@
 
   async function initialize() {
     return serial(async () => {
-      const stored = await chrome.storage.local.get([...Core.KEYS, STATE, CONFIG, QUIET]);
+      const stored = await chrome.storage.local.get([...readKeys(), STATE, CONFIG, QUIET]);
       if (Number.isFinite(stored[QUIET])) quietUntil = Math.max(quietUntil, stored[QUIET]);
       if (!stored[STATE] && !stored[CONFIG]?.enabled) return;
       const device = stored[STATE]?.device || crypto.randomUUID();
       const doc = stored[STATE]?.doc;
       const data = Object.fromEntries(Core.KEYS.map((key) => [
-        key, stored[key] ?? (key === "laterOnItems" || key === "laterOnProjects" ? [] : {})
+        key, key === "laterOnItems" ? fullItems(stored) : (stored[key] ?? (key === "laterOnProjects" ? [] : {}))
       ]));
       const next = doc ? Core.change(doc, Core.materialize(doc), data, device) : Core.seed(data, device);
       if (doc && !Core.equal(next, doc)) quietUntil = Date.now() + LOCAL_IDLE_MS;
@@ -123,8 +146,10 @@
   ready.catch(() => status({ phase: "error", error: "syncLocalError" }).catch(() => {}));
 
   // 本地任何一处写了这五个键，都记进日志并重新计时。收 APPLIED 标记说明是自己写的，忽略。
+  // 详情表（摘要/封面）变了也算「收藏变了」：改摘要时索引可能一模一样。
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== "local" || changes[APPLIED] || !Core.KEYS.some((key) => changes[key])) return;
+    const itemsTouched = changes.laterOnItems || changes[ItemStore.DETAILS_KEY];
+    if (area !== "local" || changes[APPLIED] || !(Core.KEYS.some((key) => changes[key]) || itemsTouched)) return;
     // 同步设成「静默期」，否则一个正在飞的轮询可能把刚改的内容当成远端更新
     quietUntil = Date.now() + LOCAL_IDLE_MS;
     serial(async () => {
@@ -133,9 +158,22 @@
       if (!state) { await chrome.storage.local.set({ [QUIET]: quietUntil }); return; }
       const before = {}, after = {};
       for (const key of Core.KEYS) {
-        if (!changes[key]) continue;
+        if (key === "laterOnItems" || !changes[key]) continue;
         before[key] = changes[key].oldValue;
         after[key] = changes[key].newValue;
+      }
+      if (itemsTouched) {
+        // 「收藏变了」有两个来源：索引变了，或者只有详情表变了。
+        // 两种都折算成「完整条目的前后两份」，交给内核逐条比；
+        // 没变的那一方用当前存储值补上。
+        const current = await chrome.storage.local.get(readKeys());
+        const indexBefore = changes.laterOnItems ? changes.laterOnItems.oldValue : current.laterOnItems;
+        const indexAfter = changes.laterOnItems ? changes.laterOnItems.newValue : current.laterOnItems;
+        const detailsChange = changes[ItemStore.DETAILS_KEY];
+        const detailsBefore = detailsChange ? detailsChange.oldValue : current[ItemStore.DETAILS_KEY];
+        const detailsAfter = detailsChange ? detailsChange.newValue : current[ItemStore.DETAILS_KEY];
+        before.laterOnItems = ItemStore.hydrate(indexBefore || [], detailsBefore || {});
+        after.laterOnItems = ItemStore.hydrate(indexAfter || [], detailsAfter || {});
       }
       // 记录这次事件的实际差额，而不是整份快照：避免把「同时发生的远端更新」又写回去
       const next = Core.change(state.doc, before, after, state.device);

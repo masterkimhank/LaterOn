@@ -23,7 +23,10 @@ context.LaterOnTabs = {
   matches: async (urls) => (urls || []).filter(Boolean).map((url, index) => ({ id: index + 1, url })),
   closeMatching: async (urls) => { closed += (urls || []).length; return (urls || []).length; }
 };
-vm.runInContext(helper + deletion, context);
+// commitItemMutation 会用 ItemStore 把「索引 + 内存里的摘要/封面」拼回完整条目，
+// 所以桩里也得装上真正的 item-store.js（和 sidepanel.html 的加载顺序一致）。
+const itemStoreSource = fs.readFileSync(path.join(__dirname, '../item-store.js'), 'utf8');
+vm.runInContext(`${itemStoreSource}\nconst ItemStore = globalThis.LaterOnItemStore;\n${helper}${deletion}`, context);
 (async () => {
   loadFailed = true;
   await context.deleteItem('a');

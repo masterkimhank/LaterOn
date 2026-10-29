@@ -1,4 +1,4 @@
-importScripts("url-utils.js", "reading-position-background.js", "webdav-sync-core.js", "webdav-directory.js", "webdav-sync.js");
+importScripts("item-store.js", "url-utils.js", "reading-position-background.js", "webdav-sync-core.js", "webdav-directory.js", "webdav-sync.js");
 const normalizeUrl = LaterOnUrl.normalize;
 // url-utils.js 和 background.js 一起打包，这三个函数一定在。这里给出一份保底，
 // 是为了让「只注入了 normalize 的测试桩」退化成「只按网址去重」（与旧行为一致），
@@ -6,6 +6,28 @@ const normalizeUrl = LaterOnUrl.normalize;
 const siteKey = LaterOnUrl.siteKey || (() => "");
 const titleKey = LaterOnUrl.titleKey || ((value) => String(value || ""));
 const pathsAlike = LaterOnUrl.pathsAlike || (() => false);
+
+// 收藏条目拆成「索引（laterOnItems）」与「详情（laterOnItemDetails）」两处存：
+// 索引只留轻量字段，摘要与封面进另一张表。标已读只写索引，改摘要写详情表。
+// 来龙去脉见 item-store.js 开头。
+// 兜底那半边是给「只加载了 background.js 的测试桩」用的：缺模块时退化成不拆分
+// （索引里照旧带着摘要封面），而不是把收藏流程整个打断。
+const ItemStore = globalThis.LaterOnItemStore || {
+  INDEX_KEY: "laterOnItems",
+  DETAILS_KEY: "laterOnItemDetails",
+  DETAIL_FIELDS: [],
+  splitItem(item) { return { index: item, detail: null }; },
+  indexOf(items) { return items; },
+  detailsOf() { return {}; },
+  hydrateItem(item) { return item; },
+  hydrate(index) { return Array.isArray(index) ? index : []; },
+  writePatch(items) { return { laterOnItems: items }; },
+  async load(local) {
+    const stored = await local.get("laterOnItems");
+    const index = Array.isArray(stored?.laterOnItems) ? stored.laterOnItems : [];
+    return { index, details: {}, items: index };
+  }
+};
 
 const STORAGE_KEY = "laterOnItems";
 const PROJECTS_KEY = "laterOnProjects";
@@ -28,7 +50,17 @@ async function mutateItems({ operation, ids, patch = {} }) {
     const stored = await chrome.storage.local.get([STORAGE_KEY, COVERS_KEY, ORDER_KEY, CURRENT_ITEM_KEY]);
     const original = stored[STORAGE_KEY] || [];
     const targets = new Set(ids);
+    // patch 里可能带摘要 / 封面（用户改过）。这两个字段不在索引里，得单独写详情键，
+    // 否则会出现「索引里改了、详情里还是旧的」——读的时候详情优先，改动就看不见了。
+    const detailPatch = {};
+    for (const field of ItemStore.DETAIL_FIELDS) {
+      if (field in patch) detailPatch[field] = patch[field];
+    }
+    const touchesDetail = Object.keys(detailPatch).length > 0;
     let affected = 0;
+    // 老数据的索引条目里还带着摘要 / 封面。这一条只要被改动，就顺手把这两个字段从索引里
+    // 剥掉（值在下面统一搬进详情表），别让「改过的那条」继续带着大字段躺在索引里。
+    let strippedLegacy = false;
     const nextItems = operation === "delete"
       ? original.filter(item => { if (!targets.has(item.id)) return true; affected++; return false; })
       : original.map(item => {
@@ -36,16 +68,36 @@ async function mutateItems({ operation, ids, patch = {} }) {
         affected++;
         const next = { ...patch };
         delete next.id;
+        // 详情字段走单独那个键，别落到索引里。
+        for (const field of ItemStore.DETAIL_FIELDS) delete next[field];
         if (next.status) {
           next.read = next.status === "done";
           next.doneAt = next.status === "done"
             ? (item.status === "done" && Number(item.doneAt) ? item.doneAt : Date.now())
             : null;
         }
-        return { ...item, ...next };
+        const split = ItemStore.splitItem({ ...item, ...next });
+        if (split.detail) strippedLegacy = true;
+        return split.index;
       });
     const nextCovers = { ...(stored[COVERS_KEY] || {}) };
     const write = { [STORAGE_KEY]: nextItems };
+    // 回给调用方的「这次真改到的详情」。索引里已经不带你刚改的摘要 / 封面了，
+    // 只回索引会让页面在等 onChanged 的那几十毫秒里画回旧封面；回整张详情表又要把
+    // 十几万字节搬进消息里。所以只挑改动过的那几条带回去，页面拿内存里现成的补齐。
+    const changedDetails = {};
+    if (operation === "update" && (touchesDetail || strippedLegacy) && affected) {
+      // 详情表是整表一个键：读现有的，改这几条，再整表写回（别的条目原样带着）。
+      const current = (await chrome.storage.local.get(ItemStore.DETAILS_KEY))[ItemStore.DETAILS_KEY] || {};
+      const nextDetails = { ...current };
+      for (const id of targets) {
+        // 老数据可能把摘要存在索引条目里，先当底稿，再用详情表与这次的 patch 覆盖。
+        const legacy = ItemStore.splitItem(original.find((item) => item.id === id)).detail || {};
+        nextDetails[id] = { ...legacy, ...(current[id] || {}), ...detailPatch };
+        changedDetails[id] = nextDetails[id];
+      }
+      write[ItemStore.DETAILS_KEY] = nextDetails;
+    }
     if (operation === "delete") {
       for (const id of targets) delete nextCovers[id];
       write[COVERS_KEY] = nextCovers;
@@ -53,10 +105,21 @@ async function mutateItems({ operation, ids, patch = {} }) {
         ([scope, list]) => [scope, Array.isArray(list) ? list.filter(id => !targets.has(id)) : list]
       ));
       if (targets.has(stored[CURRENT_ITEM_KEY])) write[CURRENT_ITEM_KEY] = null;
+      // 条目没了，详情表里那一份也一并去掉（同一次 set，不会出现中间态）。
+      if (affected) {
+        const current = (await chrome.storage.local.get(ItemStore.DETAILS_KEY))[ItemStore.DETAILS_KEY] || {};
+        let changed = false;
+        const nextDetails = {};
+        for (const [id, detail] of Object.entries(current)) {
+          if (targets.has(id)) changed = true;
+          else nextDetails[id] = detail;
+        }
+        if (changed) write[ItemStore.DETAILS_KEY] = nextDetails;
+      }
     }
-    // 一次提交网页、封面、顺序及当前阅读标记；失败时不返回成功结果。
+    // 一次提交网页、详情、封面、顺序及当前阅读标记；失败时不返回成功结果。
     await chrome.storage.local.set(write);
-    return { ok: true, items: nextItems, covers: nextCovers, affected };
+    return { ok: true, items: nextItems, details: changedDetails, covers: nextCovers, affected };
   });
 }
 
@@ -168,13 +231,15 @@ chrome.omnibox?.onInputStarted?.addListener(() => { setOmniboxDefault().catch(()
 chrome.omnibox?.onInputChanged?.addListener((text, suggest) => {
   const generation = ++omniboxGeneration;
   Promise.all([
-    chrome.storage.local.get([STORAGE_KEY, PROJECTS_KEY]),
+    chrome.storage.local.get(PROJECTS_KEY),
+    // 地址栏搜索也会匹配摘要，而摘要不在索引里 —— 这里读一次完整的（索引 + 详情）。
+    ItemStore.load(chrome.storage.local),
     usesEnglish(),
     setOmniboxDefault(text)
-  ]).then(([stored, en]) => {
+  ]).then(([stored, loaded, en]) => {
     if (generation !== omniboxGeneration) return;
     const inbox = en ? "Inbox" : "等待整理";
-    const suggestions = omniboxMatches(stored[STORAGE_KEY] || [], stored[PROJECTS_KEY] || [], text).map(({ item, project }) => ({
+    const suggestions = omniboxMatches(loaded.items, stored[PROJECTS_KEY] || [], text).map(({ item, project }) => ({
       content: item.url,
       description: `<match>${escapeOmniboxText(String(item.title || item.url).slice(0, 100))}</match> <dim>— ${escapeOmniboxText(project || inbox)} · ${escapeOmniboxText(item.source || "")}</dim>`
     }));
@@ -320,7 +385,7 @@ async function purgeExpiredItems() {
 
 async function purgeExpiredItemsNow() {
   try {
-    const stored = await chrome.storage.local.get([STORAGE_KEY, ORDER_KEY, SETTINGS_KEY, COVERS_KEY]);
+    const stored = await chrome.storage.local.get([STORAGE_KEY, ORDER_KEY, SETTINGS_KEY, COVERS_KEY, ItemStore.DETAILS_KEY]);
     const items = stored[STORAGE_KEY] || [];
     const days = normalizeCleanDays((stored[SETTINGS_KEY] || {}).autoCleanDays);
     const cutoff = Date.now() - days * DAY_MS;
@@ -342,8 +407,36 @@ async function purgeExpiredItemsNow() {
     for (const [id, data] of Object.entries(covers)) {
       if (!expiredIds.has(id)) nextCovers[id] = data;
     }
-    await chrome.storage.local.set({ [STORAGE_KEY]: kept, [ORDER_KEY]: nextOrders, [COVERS_KEY]: nextCovers });
+    // 过期条目的详情也一并去掉（同一次 set，不会出现中间态）。
+    const details = stored[ItemStore.DETAILS_KEY] || {};
+    const nextDetails = {};
+    for (const [id, detail] of Object.entries(details)) {
+      if (!expiredIds.has(id)) nextDetails[id] = detail;
+    }
+    await chrome.storage.local.set({
+      [STORAGE_KEY]: kept, [ORDER_KEY]: nextOrders, [COVERS_KEY]: nextCovers, [ItemStore.DETAILS_KEY]: nextDetails
+    });
     return expiredIds.size;
+  } catch {
+    return 0;
+  }
+}
+
+// 把老数据里的摘要 / 封面搬到详情表上。
+// 索引里留着它们也能正常读（hydrate 会沿用），但那样索引永远是胖的：
+// 每标一次已读都要把整份摘要重新序列化一遍，拆分就白做了。
+// 幂等：搬完之后索引里就没这两个字段了，再跑一次会立刻返回 0。
+// 先写详情、后写索引：万一中间失败，顶多是详情表多了几条，不会把摘要弄丢。
+async function migrateLegacyDetails() {
+  try {
+    const stored = await chrome.storage.local.get([STORAGE_KEY, ItemStore.DETAILS_KEY]);
+    const items = stored[STORAGE_KEY] || [];
+    const legacy = items.filter((item) => item && item.id && ItemStore.DETAIL_FIELDS.some((field) => field in item));
+    if (!legacy.length) return 0;
+    const details = { ...(stored[ItemStore.DETAILS_KEY] || {}), ...ItemStore.detailsOf(legacy) };
+    await chrome.storage.local.set({ [ItemStore.DETAILS_KEY]: details });
+    await chrome.storage.local.set({ [STORAGE_KEY]: ItemStore.indexOf(items) });
+    return legacy.length;
   } catch {
     return 0;
   }
@@ -359,6 +452,8 @@ if (chrome.alarms) {
 }
 // 扩展启动 / service worker 每次被唤醒时也顺手扫一遍。
 purgeExpiredItems().catch(() => {});
+// 迁移排进同一条写队列：它和自动清理都要「读整份索引 → 改写」，交叉跑会互相覆盖。
+queueItemWrite(migrateLegacyDetails).catch(() => {});
 // 设置里把天数调小了立即生效（不用等下一次定时）。
 chrome.storage.onChanged?.addListener((changes, area) => {
   if (area === "local" && changes[SETTINGS_KEY]) purgeExpiredItems().catch(() => {});
@@ -938,8 +1033,10 @@ function countAlreadySaved(items, tabs) {
 
 async function saveItem(item, options = {}) {
   const saved = await queueItemWrite(async () => {
-    const result = await chrome.storage.local.get(STORAGE_KEY);
-    const items = result[STORAGE_KEY] || [];
+    // 一次读回索引与详情表。判重复只用索引，但重复时要看「摘要/封面缺不缺」，
+    // 而那两个字段只在详情表里。
+    const loaded = await ItemStore.load(chrome.storage.local);
+    const items = loaded.items;
     const index = findSameArticleIndex(items, item);
 
     // 已存在同一篇：视为重复收藏——不新建、不挪动顺序；
@@ -952,7 +1049,9 @@ async function saveItem(item, options = {}) {
       // 之后界面上就能同时给出「收藏时看到的」和「网站现在给的」两版标题。
       const remembered = existing.title !== beforeTitle ? rememberTitleBeforeReplace(existing, beforeTitle) : false;
       const backfilled = backfillTitleAtSave(existing, item);
-      if (refreshed || remembered || backfilled) await chrome.storage.local.set({ [STORAGE_KEY]: items });
+      if (refreshed || remembered || backfilled) {
+        await chrome.storage.local.set(ItemStore.writePatch(items, loaded.details));
+      }
       return { ok: true, item: existing, updated: true, duplicated: true, refreshed };
     }
 
@@ -975,7 +1074,8 @@ async function saveItem(item, options = {}) {
       status: "unread"
     };
     items.unshift(normalized);
-    await chrome.storage.local.set({ [STORAGE_KEY]: items });
+    // 索引里只放轻量字段；摘要与封面进详情表。
+    await chrome.storage.local.set(ItemStore.writePatch(items, loaded.details));
 
     return { ok: true, item: normalized, updated: false, duplicated: false };
   });
@@ -1190,10 +1290,11 @@ async function runBatchSave({ tabs, source = "shortcut", notifyTabId = null, pro
       }
 
       const saved = await queueItemWrite(async () => {
-        const stored = await chrome.storage.local.get(STORAGE_KEY);
-        const items = stored[STORAGE_KEY] || [];
-        const existing = items[findSameArticleIndex(items, { url: meta.url, title: meta.title })];
-        if (existing) {
+        const loaded = await ItemStore.load(chrome.storage.local);
+        const items = loaded.items;
+        const existingIndex = findSameArticleIndex(items, { url: meta.url, title: meta.title });
+        if (existingIndex >= 0) {
+          const existing = items[existingIndex];
           const beforeTitle = existing.title;
           const refreshed = mergeDuplicateMetadata(existing, meta);
           const remembered = existing.title !== beforeTitle ? rememberTitleBeforeReplace(existing, beforeTitle) : false;
@@ -1201,7 +1302,9 @@ async function runBatchSave({ tabs, source = "shortcut", notifyTabId = null, pro
           const target = projectId || null;
           const moved = (existing.projectId || null) !== target;
           if (moved) existing.projectId = target;
-          if (refreshed || remembered || backfilled || moved) await chrome.storage.local.set({ [STORAGE_KEY]: items });
+          if (refreshed || remembered || backfilled || moved) {
+            await chrome.storage.local.set(ItemStore.writePatch(items, loaded.details));
+          }
           return { record: existing, duplicated: true, refreshed, moved };
         }
         const record = {
@@ -1222,7 +1325,7 @@ async function runBatchSave({ tabs, source = "shortcut", notifyTabId = null, pro
         };
         const previousIndex = previousAddedId ? items.findIndex((entry) => entry.id === previousAddedId) : -1;
         items.splice(previousIndex + 1, 0, record);
-        await chrome.storage.local.set({ [STORAGE_KEY]: items });
+        await chrome.storage.local.set(ItemStore.writePatch(items, loaded.details));
         return { record, duplicated: false };
       });
       const { record, refreshed, moved } = saved;
@@ -1315,9 +1418,10 @@ async function showPickerOverlay(tab, payload) {
   const runId = (pickerRunByTab.get(tab.id) || 0) + 1;
   pickerRunByTab.set(tab.id, runId);
   try {
-    const stored = await chrome.storage.local.get([PROJECTS_KEY, STORAGE_KEY, SETTINGS_KEY, COVERS_KEY]);
+    const stored = await chrome.storage.local.get([PROJECTS_KEY, SETTINGS_KEY, COVERS_KEY]);
     const projects = stored[PROJECTS_KEY] || [];
-    const items = stored[STORAGE_KEY] || [];
+    // 项目封面要取「这个项目里第一篇有图的收藏」，图在详情键里，所以读完整的。
+    const items = (await ItemStore.load(chrome.storage.local)).items;
     const settings = stored[SETTINGS_KEY] || {};
     const covers = stored[COVERS_KEY] || {};
 
@@ -1898,7 +2002,7 @@ async function cleanupLegacyContent() {
     changed = true;
     return rest;
   });
-  if (changed) await chrome.storage.local.set({ [STORAGE_KEY]: cleaned });
+  if (changed) await chrome.storage.local.set({ [STORAGE_KEY]: ItemStore.indexOf(cleaned) });
 }
 
 function safeHostname(url) {

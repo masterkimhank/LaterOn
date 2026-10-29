@@ -15,6 +15,9 @@ const I18N_SOURCE = read("i18n.js");
 const DIALOG_SOURCE = read("dialog.js");
 const DIALOG_CSS = read("dialog.css");
 const LIBRARY_SOURCE = read("library.js");
+// library.html 里真的会先加载 item-store.js（摘要 / 封面在另一张表里），
+// 所以这一份也照实装上——否则页面跑的是兜底版，测不出「改完封面立刻生效」。
+const ITEM_STORE_SOURCE = read("item-store.js");
 const LIBRARY_HTML = read("library.html");
 
 let failures = 0;
@@ -344,6 +347,7 @@ async function partLibrary() {
   window.eval(I18N_SOURCE);
   window.eval(DIALOG_SOURCE);
   require('./helpers/item-mutation')(window);
+  window.eval(ITEM_STORE_SOURCE);
   window.eval(LIBRARY_SOURCE);
 
   const tick = (ms = 20) => new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -367,8 +371,12 @@ async function partLibrary() {
   click(visible().querySelector(".lod-ok"));
   await tick(300);
 
+  // 封面与摘要存在 laterOnItemDetails 这张表里（索引里不再有 image），
+  // 所以「写进库了没有」要按 id 去详情表看，索引那边只看 imageEdited 这类轻量字段。
+  const detailOf = (id) => store.laterOnItemDetails?.[id] || {};
   let saved = store.laterOnItems.find((entry) => entry.id === "item-1");
-  check("移除封面写进了库（image 变空）", saved?.image === "", String(saved?.image).slice(0, 30));
+  check("移除封面写进了库（image 变空）", detailOf("item-1").image === "", String(detailOf("item-1").image).slice(0, 30));
+  check("封面没留在索引里", !("image" in (saved || {})));
   check("标记为「封面由用户定过」", saved?.imageEdited === true, String(saved?.imageEdited));
   check("卡片上的封面图被撤掉", coverSrc("item-1") === "", coverSrc("item-1"));
   check("退回 LaterOn 的 Logo 占位", !!card("item-1")?.querySelector(".cover .cover-placeholder"));
@@ -382,17 +390,18 @@ async function partLibrary() {
   await tick(300);
 
   saved = store.laterOnItems.find((entry) => entry.id === "item-1");
-  check("条目里只记 local:// 指针，不存 base64 大图", saved?.image === "local://item-1", String(saved?.image).slice(0, 40));
+  check("条目里只记 local:// 指针，不存 base64 大图", detailOf("item-1").image === "local://item-1", String(detailOf("item-1").image).slice(0, 40));
   check("封面本体存进了单独的 laterOnCovers 键", store.laterOnCovers?.["item-1"] === FAKE_DATA_URL, String(store.laterOnCovers?.["item-1"]).slice(0, 40));
   check("卡片立刻显示新封面（不用刷新页面）", coverSrc("item-1") === FAKE_DATA_URL, coverSrc("item-1").slice(0, 40));
 
   // ── 没动封面就保存：不该写库 ──
-  const before = JSON.stringify(store.laterOnItems);
+  const before = JSON.stringify(store.laterOnItems) + JSON.stringify(store.laterOnItemDetails);
   click(card("item-1").querySelector(".edit"));
   await tick();
   click(visible().querySelector(".lod-ok"));
   await tick(300);
-  check("没改任何东西就保存 → 不写库", JSON.stringify(store.laterOnItems) === before);
+  check("没改任何东西就保存 → 不写库",
+    JSON.stringify(store.laterOnItems) + JSON.stringify(store.laterOnItemDetails) === before);
   check("会提示「没有改动」", /没有改动/.test(document.querySelector("#toast").textContent), document.querySelector("#toast").textContent);
 }
 
