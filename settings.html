@@ -156,8 +156,44 @@
             <button id="wipeBtn" class="setting-action danger" type="button" data-i18n="wipeAction">清空</button>
           </div>
         </section>
+
+        <!-- 多设备同步：用用户自己的网盘（WebDAV）搬数据，不经过任何服务器。
+             密码只存在本机的 chrome.storage.local，不进同步文件、不进导出 JSON。 -->
+        <section class="settings-group">
+          <h2 data-i18n="syncTitle">多设备同步</h2>
+          <p class="setting-note" data-i18n="syncNote">用你自己的网盘（支持 WebDAV，例如坚果云、Nextcloud）在几台设备之间同步收藏。账号密码只保存在这台电脑的浏览器里。</p>
+          <form id="webdavForm" autocomplete="off">
+            <div class="setting-row">
+              <div class="setting-label"><strong data-i18n="syncEnable">启用同步</strong><span data-i18n="syncEnableHint">关掉后不再上传，也不会改动云端已有的备份</span></div>
+              <label class="switch"><input type="checkbox" name="enabled" /><span class="slider"></span></label>
+            </div>
+            <div class="setting-row">
+              <div class="setting-label"><strong data-i18n="syncUrl">服务地址</strong><span data-i18n="syncUrlHint">填网盘的 WebDAV 根地址，例如 https://dav.jianguoyun.com/dav/；数据会放在它下面的 LaterOn/ 目录</span></div>
+              <input class="setting-input" type="url" name="url" placeholder="https://dav.example.com/dav/" spellcheck="false" data-i18n-placeholder="syncUrlPlaceholder" />
+            </div>
+            <div class="setting-row">
+              <div class="setting-label"><strong data-i18n="syncUser">用户名</strong><span data-i18n="syncUserHint">WebDAV 账号；有的网盘要填邮箱</span></div>
+              <input class="setting-input" type="text" name="username" spellcheck="false" autocapitalize="off" />
+            </div>
+            <div class="setting-row">
+              <div class="setting-label"><strong data-i18n="syncPassword">密码或应用密码</strong><span data-i18n="syncPasswordHint">多数网盘要求单独生成的应用密码，不是登录密码</span></div>
+              <input class="setting-input" type="password" name="password" spellcheck="false" />
+            </div>
+            <div class="setting-row">
+              <div class="setting-label"><strong data-i18n="syncStatusLabel">同步状态</strong><span id="webdavStatus" data-i18n="syncPending">等待同步</span></div>
+              <div class="data-actions">
+                <button id="webdavTest" class="setting-action" type="button" data-i18n="syncTest">测试连接</button>
+                <button id="webdavSync" class="setting-action" type="button" data-i18n="syncNow" disabled>立即同步</button>
+                <button id="webdavSave" class="setting-action primary" type="submit" data-i18n="syncSave">保存</button>
+              </div>
+            </div>
+          </form>
+          <p class="setting-note" id="webdavFeedback"></p>
+          <p class="setting-note" id="webdavLegacyNote" hidden data-i18n="syncLegacyNote">检测到旧配置：地址直接指向数据目录。重新保存后会改成「根地址 + LaterOn/」。</p>
+        </section>
       </main>
     </div>
     <script src="settings.js"></script>
+    <script src="webdav-settings.js"></script>
   </body>
 </html>

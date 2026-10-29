@@ -124,3 +124,28 @@ body {
 .data-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .danger-row { align-items: flex-start; }
 .danger-row .setting-label strong { color: #df4c31; }
+
+/* ── 多设备同步（WebDAV）────────────────────────────────────
+   地址/账号/密码是三行长输入，电脑上给固定宽度、窄窗口占满整行；
+   按钮沿用 .setting-action，「保存」用主色实心表示这是主动作。 */
+.setting-input {
+  width: min(320px, 46%); min-width: 200px;
+  border: 1px solid var(--hairline-2); border-radius: 12px;
+  padding: 10px 12px; background: var(--field); color: var(--field-text);
+  font-family: inherit; font-size: 13px;
+}
+.setting-input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.setting-action.primary { background: var(--accent); border-color: transparent; color: #fff; }
+.setting-action.primary:hover { background: var(--accent); filter: brightness(1.06); }
+.setting-action:disabled { opacity: .5; cursor: default; }
+.setting-action:disabled:hover { background: var(--field); }
+/* 状态行按阶段上色：出错要红，正在同步要淡 */
+#webdavStatus[data-phase="error"] { color: #df4c31; }
+#webdavStatus[data-phase="success"] { color: var(--ink); }
+#webdavStatus[data-phase="disabled"] { color: var(--subtle); }
+#webdavFeedback[data-phase="error"] { color: #df4c31; }
+/* 没有提示时不要留一行空白 */
+#webdavFeedback:empty { display: none; margin: 0; }
+@media (max-width: 620px) {
+  .setting-input { width: 100%; }
+}

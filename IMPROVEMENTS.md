@@ -209,6 +209,108 @@ if (cur) { if (cur.dataset.currentLabel !== label) ...; if (!cur.classList.conta
 
 ---
 
+## 1.73.0 — 多设备同步 + 发版流水线（2026-10-29）
+
+这一轮做的是「别人已经想清楚的事」：参考 `pasiooooo/LaterOn`（同源 fork，1.66.1 分叉，MIT）在 1.67.x 里的多设备同步与自动发版。它的实现思路是对的，但有两处会在真实多设备场景下丢数据，抄的时候补掉了。
+
+### ① 侧栏透明封面透出橙色 Logo 砖
+
+**根因**：`.thumb` 里同时存在「占位（橙色渐变 + Logo）」和「封面图」，封面用 `position:absolute; z-index:1` 盖在占位上。不透明 JPEG 看不出问题，**透明 PNG / SVG 会透出底下的渐变和 Logo**，看上去像封面坏了。
+
+**修法**：不再叠层，改成「有封面就隐藏占位」。封面本来就 `thumb.prepend()` 插在占位**前面**，所以一条相邻兄弟选择器就够：
+
+```css
+.thumb-img ~ .thumb-placeholder { display:none; }
+```
+
+坏图降级链走完被 `image.remove()` 之后，占位自动重新出现，不需要额外 JS。
+
+**踩坑**：全屏页 `library.js` 早就用 `cover.replaceChildren(img)` 把占位整个换掉了，所以只有侧栏有这个 bug —— 两处实现不一致，光看一个文件会以为已经修过。
+
+### ② 打包脚本漏检子目录里的垃圾文件（真 bug）
+
+**根因**：`FORBIDDEN_NAMES` 里存的是裸文件名（`.DS_Store`），但 `validate_archive()` 拿**包内相对路径**（`_locales/en/.DS_Store`）去比对，永远比不中；而 `RUNTIME_DIRS` 的 `_locales` 是整棵收进来的，`release_files()` 也没过滤。
+
+**反证**（把两处临时退回旧写法跑新测试）：
+
+| | 文件数 | 结果 |
+|---|---|---|
+| 旧写法 | **38**（基线 36） | 两个 `.DS_Store` 进包，校验环节仍然打印 "Verified: no tests, design drafts, previews, documentation, .DS_Store" |
+| 只改 `validate_archive` | 38 | 构建直接失败（挡住是挡住了，但发不出去） |
+| 两处都改 | 36 | 静默过滤，构建成功 |
+
+**修法**：`release_files()` 里 `path.name not in FORBIDDEN_NAMES`，`validate_archive()` 里 `Path(name).name in FORBIDDEN_NAMES`。
+
+### ③ 多设备同步：为什么是「按记录合并」而不是整份覆盖
+
+整份 JSON 覆盖是这类功能最常见的写法，也是丢数据最快的方式：A 设备改了标题、B 设备加了收藏，谁后传谁的版本就赢，另一个人的改动直接没了。
+
+参考实现的模型值得照搬：
+
+| 设计 | 做法 | 解决什么 |
+|---|---|---|
+| 合并粒度 | 每条 item / project 一条记录 | 两台设备改不同条目互不影响 |
+| 冲突判定 | `stamp = [逻辑时钟, 设备ID]` | 系统时间被改也不会乱序 |
+| 平局 | 时钟 → 设备ID → 内容哈希 | 两端各算一遍结果相同，不需要协商 |
+| 删除 | 墓碑 `deleted:true`，永不清理 | 离线设备回来不会「复活」删除的内容 |
+| 传输 | delta：只传与基线不同的记录 | 700 条改 1 条只传 1 条 |
+| 云端格式 | 每天一个 `lateron-backup-YYYY-MM-DD.json`，就是导出 JSON | 任一份都能手动导入，出问题能自救 |
+
+**和本项目数据的对接点**：导出格式早就是 `type:"lateron-backup" / version:2`、文件名也是按天，所以复用不需要迁移。只补了两处：
+- `backup()` 里加 `readingPositions`（设置页导出/导入同步补上，老文件没有该字段时按空处理）
+- `validValue()` 的收藏白名单加 `titleAtSave`（本项目 1.71.0 的字段，参考实现没有）
+
+### ④ 对参考实现的两处补强
+
+**a) 并发写会互相覆盖（原实现没有条件写入）**
+
+原流程是「GET 最新 → 合并 → 整份 PUT」，注释里明确写「不依赖 ETag 或条件写入」，只在 PUT 后 GET 回来跟自己写的字节比。问题：两台设备同一分钟同步时，后写的那台把先写的整份盖掉，而**回读自检永远发现不了**（它读到的正是自己刚写的）。
+
+修法：读到 ETag 就带 `If-Match`，新建当天文件用 `If-None-Match: *`；收到 `412` 就重读最新、重新合并，最多 5 次，仍然抢不过就报 `syncConflict` 并保持云端原样。服务器不给 ETag 时退化为回读校验（行为与原实现一致），不假装有并发保护。
+
+测试用内存版 WebDAV 服务器模拟「PUT 前另一台设备抢先写」：修复前那条 `remote-only` 会被抹掉，修复后四条都在（`local-a/b/c` + `remote-only`）。
+
+**b) 把「属性不存在」的 404 当成畸形响应**
+
+原 `names()` 里，只要某条 response 的各种 `status` 里没有 2xx 就 `throw syncInvalidListing`。但 WebDAV 允许服务器对「某个属性不存在」单独回一个 404 的 `propstat`（很常见），这时整次目录列举就会失败、同步永久卡在错误状态。
+
+修法：没有 2xx 就**跳过这条**，不判整个文档畸形。真正的畸形（DTD、实体、标签不配对、两个根节点）仍然一律拒绝 —— 这部分原实现写得很稳，原样保留。
+
+### ⑤ 发版流水线：推 tag 自动发版，说明只有一份实现
+
+**问题**：`release.js` 只能在本机跑，而本机推送依赖 `http.proxy=127.0.0.1:7897` + `sslBackend=openssl` 这套环境；换台电脑就没法发版。
+
+**改法**：
+- `.github/workflows/release.yml`：推 `v*` tag 或手动指定已有 tag → 校验 tag↔manifest 版本 → 跑测试（jsdom 装不上则跳过并告警，发版门禁仍在本地）→ `build-release.py` 打包 → `gh release create --verify-tag`
+- `scripts/release-notes.js`：把「从 CHANGELOG 抽段落 + 版本一致性校验 + 安装说明」抽成一份，`release.js` 与 CI 都 `require` 它，避免两边发出的说明不一样
+- 标题带 `-my.N`（`1.73.0-my.1`），否则同一个版本号发过两次，Releases 列表会出现两条一模一样的标题
+
+**tag 规则**：`manifest.version` 只认数字和点，所以序号只能挂在 git tag 上：`v<版本>-my.<序号>`。CI 里从 tag 推 zip 名（`${TAG#v}` 再掐掉 `-my.*`）。
+
+### ⑥ 新增 / 改动的文件
+
+| 文件 | 作用 |
+|---|---|
+| `webdav-sync-core.js` | 纯函数：合并、时钟、墓碑、delta、备份格式（可单测，无 chrome 依赖） |
+| `webdav-directory.js` | PROPFIND 解析：SW 里没有 `DOMParser`，手写 namespace-aware 读取器 |
+| `webdav-sync.js` | 传输层：队列、超时、MKCOL/PROPFIND/GET/PUT、CAS 重试、状态 |
+| `webdav-settings.js` | 设置页面板：状态渲染、保存/测试/立即同步 |
+| `settings.html` / `settings.css` / `i18n.js` | 面板结构与 44 组中英文案 |
+| `settings.js` | 导出/导入补 `readingPositions` |
+| `scripts/release-notes.js` | 发布说明生成（本地与 CI 共用） |
+| `.github/workflows/release.yml` | 推 tag 自动发版 |
+| `scripts/build-release.py` | 白名单补 4 个新 js；修子目录垃圾文件漏检 |
+
+### ⑦ 踩坑
+
+- **打包白名单不会自动带上新 js**：`validate_manifest()` 只校验 manifest 引用到的文件，`settings.html` 里的 `<script src>` 和 `importScripts()` 都不在校验范围。漏加就是「包能打成功、装上去 404」。
+- **jsdom 不反射 `referrerPolicy` / `loading` / `decoding` 到 HTML 属性**（只存 IDL 属性），断言要读属性值不能读 attribute，否则测试必假失败。
+- **`activate()` 必须在 `merge()` 之后调**：它只抬 stamp=0 的种子记录。先 activate 再 merge，等于让新设备的本地数据拿到了「现在」的时间戳，会把云端更权威的记录压掉。
+- **干扰测试要能持续**：模拟「另一台设备一直抢先写」时，钩子若一次性消费掉，就只能测到一次 412，测不出「重试上限」。
+- jsdom 里 `{ __proto__x: ... }` 只是普通键名，测原型污染要用 `JSON.parse('{"__proto__":...}')` 才能造出真正的自有属性。
+
+---
+
 ## 仓库工程化（2026-10-29，非扩展功能改动）
 
 这一节不改扩展行为，记的是仓库本身从「一份散着改的工作副本」变成「有历史的 fork」的过程。之前的 12 轮改动一直没进版本库，这是当时最大的风险：改坏了没有可回退的点，也说不清某一行是谁、为什么改的。

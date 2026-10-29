@@ -26,6 +26,30 @@ node scripts/release.js --publish            # 3) 测试 → 打包 → 打 tag 
 - git tag 用 `v<版本>-my.<序号>`：`v1.73.0-my.1`。序号由脚本自动算，同一版本第二次发就是 `-my.2`
 - 加 `-my` 后缀是为了**不和上游撞名**。上游也发 `v1.73.0` 时，两者 tag 不同，`git fetch upstream` 不会因 tag 冲突报错
 
+## 一点五、还有一条路：推 tag 让 GitHub 自己发
+
+`release.js` 需要本机有 `gh` 登录，还要能连上 GitHub（本机靠 `http.proxy` + `sslBackend=openssl` 那套配置）。
+换台电脑、代理挂了，这条路就走不通。所以仓库里另有一条纯云端的路径：
+
+```bash
+git tag -a v1.73.0-my.1 -m "1.73.0"   # 打 tag（本地 release.js 会自动做这步）
+git push origin v1.73.0-my.1          # 推上去就触发了
+```
+
+`.github/workflows/release.yml` 收到 tag 后依次做：
+
+| 步骤 | 内容 | 失败会怎样 |
+| --- | --- | --- |
+| 校验 | `node scripts/release-notes.js --tag <tag>`：tag 必须等于 `v<manifest 版本>[-my.N]`，CHANGELOG 必须有对应段落 | 中止，不会发出「版本号对不上」的包 |
+| 测试 | 临时装 jsdom 后跑 `node scripts/test-all.js` | 测试挂 → 中止；jsdom 装不上 → 打印告警并跳过（发版门禁仍在本地 `release.js`） |
+| 打包 | `python3 scripts/build-release.py`（allowlist + 回读校验） | 中止 |
+| 发布 | `gh release create --verify-tag`，挂 zip + 说明 | 中止，可手动重跑 |
+
+**手动补建 Release**：Actions 页 → Release → Run workflow → 填已有 tag（例如 `v1.72.1-my.1`）。
+`--verify-tag` 保证 tag 不存在时直接失败，不会凭空造一个。
+
+两条路产出的说明是同一份 —— 都来自 `scripts/release-notes.js`，不要在 `release.js` 里单独改文案。
+
 ## 二、`--publish` 到底做了什么
 
 | 步骤 | 命令 | 失败会怎样 |

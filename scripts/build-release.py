@@ -50,6 +50,12 @@ RUNTIME_FILES = (
     "theme.js",
     "translation.css",
     "url-utils.js",
+    # 多设备同步：这三个是 service worker 里 importScripts 起来的，不进包就是 404；
+    # webdav-settings.js 由 settings.html 引用，同样不在 manifest 校验范围里，必须手加。
+    "webdav-sync-core.js",
+    "webdav-directory.js",
+    "webdav-sync.js",
+    "webdav-settings.js",
 )
 RUNTIME_DIRS = ("_locales",)
 
@@ -73,7 +79,11 @@ def relative_name(path: Path) -> str:
 def release_files() -> list[Path]:
     files = [ROOT / name for name in RUNTIME_FILES]
     for directory in RUNTIME_DIRS:
-        files.extend(path for path in (ROOT / directory).rglob("*") if path.is_file())
+        # 目录是整棵收进来的，macOS 会在这里留下 .DS_Store 之类的垃圾文件。
+        # 按「文件名」而不是相对路径过滤：这里的 name 只是 ".DS_Store"，
+        # 而相对路径是 "_locales/en/.DS_Store"，直接比对会全部漏过去。
+        files.extend(path for path in (ROOT / directory).rglob("*")
+                     if path.is_file() and path.name not in FORBIDDEN_NAMES)
 
     missing = [relative_name(path) for path in files if not path.is_file()]
     if missing:
@@ -119,7 +129,10 @@ def validate_archive(archive: Path, expected: set[str]) -> None:
             extra = sorted(set(names) - expected)
             raise RuntimeError(f"Release ZIP contents differ from allowlist; missing={missing}, extra={extra}")
         for name in names:
-            if name in FORBIDDEN_NAMES or name.endswith(".md") or name.startswith(FORBIDDEN_PREFIXES):
+            # 同上：FORBIDDEN_NAMES 里存的是裸文件名，而 name 是包内相对路径
+            # （_locales/en/.DS_Store）。用 Path(name).name 取末段再比，否则
+            # 子目录里的垃圾文件永远过不了这一关的检查。
+            if Path(name).name in FORBIDDEN_NAMES or name.endswith(".md") or name.startswith(FORBIDDEN_PREFIXES):
                 raise RuntimeError(f"Development-only file leaked into release ZIP: {name}")
         json.loads(package.read("manifest.json").decode("utf-8"))
 

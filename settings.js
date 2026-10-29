@@ -140,16 +140,19 @@ async function init() {
 
   // 导出收藏
   document.querySelector("#exportBtn").addEventListener("click", async () => {
-    const data = await chrome.storage.local.get(["laterOnItems", "laterOnProjects", "laterOnCovers", "laterOnOrder"]);
+    const data = await chrome.storage.local.get(["laterOnItems", "laterOnProjects", "laterOnCovers", "laterOnOrder", "laterOnReadingPositions"]);
     const payload = {
       type: "lateron-backup",
       version: 2,
       exportedAt: Date.now(),
       items: data.laterOnItems || [],
       projects: data.laterOnProjects || [],
-      // 自定义封面本体不在 items 里；不导出它，恢复后 local:// 指针会全部变成坏图。
+      // 自定义封面本体不在 items 里（条目只存 local:// 指针），必须一起导出，
+      // 否则换台设备恢复后所有自制封面都会变成坏图。
       covers: data.laterOnCovers || {},
-      order: data.laterOnOrder || {}
+      order: data.laterOnOrder || {},
+      // 上次读到哪里：多设备同步会用到；老版本导出的文件没有这个字段，导入时按空处理。
+      readingPositions: data.laterOnReadingPositions || {}
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -170,7 +173,7 @@ async function init() {
     try {
       const parsed = JSON.parse(await file.text());
       if (!parsed || !Array.isArray(parsed.items)) throw new Error(t("importBadFile"));
-      const existing = await chrome.storage.local.get(["laterOnItems", "laterOnProjects", "laterOnCovers", "laterOnOrder"]);
+      const existing = await chrome.storage.local.get(["laterOnItems", "laterOnProjects", "laterOnCovers", "laterOnOrder", "laterOnReadingPositions"]);
       const byUrl = new Map((existing.laterOnItems || []).map((it) => [normalizeUrl(it.url), it]));
       let skipped = 0;
       for (const it of parsed.items) {
@@ -186,7 +189,9 @@ async function init() {
         laterOnItems: mergedItems,
         laterOnProjects: [...projById.values()],
         laterOnCovers: { ...(existing.laterOnCovers || {}), ...(parsed.covers || {}) },
-        laterOnOrder: { ...(existing.laterOnOrder || {}), ...(parsed.order || {}) }
+        laterOnOrder: { ...(existing.laterOnOrder || {}), ...(parsed.order || {}) },
+        // 阅读位置：本机已有的优先（已经在读的那一篇不该被旧备份带回开头）
+        laterOnReadingPositions: { ...(parsed.readingPositions || {}), ...(existing.laterOnReadingPositions || {}) }
       });
       await LaterOnDialog.alert({
         tone: "success",
