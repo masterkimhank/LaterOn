@@ -21,6 +21,7 @@
 | — | 2026-10-29 | 测试基建 | 真浏览器端到端测试，补上 jsdom 测不到的界面与链路 | `scripts/test-e2e.js` `tests/e2e/*` `package.json` | 4 个 spec，72 条断言 |
 | — | 2026-10-29 | 稳定性 | 固定扩展 ID，换目录/换机器不再丢数据 | `manifest.json` `scripts/extension-id.js` `tests/extension-id.test.js` `tests/e2e/extension-smoke.spec.js` `tests/release-package-hygiene.test.js` | `extension-id.test.js`（10 项）、e2e 换目录实测（2 项） |
 | — | 2026-10-29 | 新功能 | 侧栏补上搜索范围开关（全部 / 等待整理） | `sidepanel.html` `sidepanel.css` `sidepanel.js` `i18n.js` | `sidepanel-search-scope.test.js`（18 项）、e2e 追加 7 项 |
+| — | 2026-10-29 | 新功能 | 侧栏补上「关闭已打开」（收藏不删） | `sidepanel.html` `sidepanel.css` `sidepanel.js` | `sidepanel-close-tabs.test.js`（24 项）、e2e 新 spec（21 项） |
 
 ---
 
@@ -179,6 +180,78 @@ e2e 里 `page.locator('.scope-option[data-scope="unfiled"]').click()` 被遮挡�
    而旧数据本来就是 3 条 —— 条件立刻成立，新数据其实还没渲染，后面点开关就等不到 2 条、
    超时失败。改成等 4 条（新数据到达才可能出现的值）。这类「假等待」静默吞掉一次真实的
    失败，比报错更难查。
+
+---
+
+## 未发布 — 侧栏「关闭已打开」（2026-10-29）
+
+**来源**：1.69.0 给完整界面做了「关闭已打开」（`library.js` 的 `closeProjectTabs`），
+侧栏一直缺（记在待办里）。
+
+### 根因
+
+这个功能的两块料其实早就在侧栏手边：`tab-navigation.js` 已经随侧栏加载（1.68.0 起用于
+「删除时顺带关标签」），`LaterOnDialog` 也已经在用（编辑、删除）。缺的只是一个入口和
+一段把「当前项目 → 要关的标签页」连起来的逻辑。侧栏里 `rg closeOpenTabs`、`closeProjectTabs`
+零命中。
+
+真正的障碍是**放哪儿**：侧栏宽度下限 320px，筛选行已经放着三个阅读档 + 计数，
+英文界面里计数会写成「1,024 pages」，再塞一个「关闭已打开」的胶囊必然换行。
+
+### 改法
+
+- 入口放在 `.filter-row` 右侧、紧跟计数，用 **22px 图标按钮**（窗口 + 叉），
+  `title` / `aria-label` 用已有的 `closeProjectTabsHint`。位置和理由与卡片上的编辑/删除同族。
+- 行为照抄完整界面那套：`matches()` 先数 → 一个都没开着就只说一句、不弹框 →
+  确认框写明项目名和数量 → `closeMatching()` 真关。
+- `projectScopeItems(projectId)` 决定范围：`unfiled` = 没有 `projectId` 的，其余按 id 精确匹配。
+  归档项目里的收藏本来就不在列表里，不参与。
+- **不看 `closeTabsOnDelete`**：那个设置管的是「删除收藏时顺带关标签」，而这个按钮本身就是
+  在要求关标签，跟删除无关。完整界面也是这么做的。
+- 侧栏没有 toast，结果写进顶部 `#status`（和删除、编辑一致）。
+- `closeTabsBusy` 挡连点：确认框是异步的，连点两下会弹出两个框、关两遍。
+- 可见性：`syncCloseTabsButton()` 在 `render()` 里调。HTML 上先写 `hidden`，免得骨架屏阶段
+  先闪一下再消失。
+
+### 动到的文件
+
+| 文件 | 改动 |
+|---|---|
+| `sidepanel.html` | 筛选行右侧加 `.filter-meta` 包住计数 + `#closeProjectTabs`（图标按钮，初始 `hidden`） |
+| `sidepanel.css` | `.filter-meta`、`.close-tabs`（22px 图标按钮）、`.close-tabs[hidden]` |
+| `sidepanel.js` | `activeProjectLabel` / `projectScopeItems` / `syncCloseTabsButton` / `closeTabsForActiveProject`、`closeTabsBusy`、点击监听、`render()` 里同步可见性；顺手删掉 `render()` 里一段重复的过期注释 |
+| `tests/sidepanel-close-tabs.test.js` | 新增 24 项（jsdom + 一份可变的假标签页列表） |
+| `tests/e2e/sidepanel-close-tabs.spec.js` | 新增 21 项（真标签页、真确认框、真关闭） |
+
+### 验证
+
+三次反向实验（都先做坏，确认断言抓得住，再恢复）：
+
+| 做坏的方式 | 结果 |
+|---|---|
+| `projectScopeItems()` 改成 `return items`（范围失效） | e2e 3 条报红（含「工作项目那个 c 还开着」），单测 6 条报红 |
+| 删掉 `.close-tabs[hidden] { display:none; }` | e2e 1 条报红（`display === "grid"`），单测 1 条报红 |
+| 确认后顺手 `laterOnItems: []` | e2e 3 条报红（「收藏还是 3 条」等） |
+
+实测：`node scripts/test-all.js` → 73/73（50s）；`node scripts/test-e2e.js` → 5/5（91s，
+共 105 条断言）。320px 实测 `scrollWidth=320 / clientWidth=320`，按钮右边缘 306px，筛选行 25px 单行。
+
+### 踩坑
+
+1. **自己写了 `display` 就得自己管 `hidden`**。`.close-tabs { display:grid }` 会压过浏览器
+   默认的 `[hidden]{display:none}`，按钮在「不该出现」的时候照样显示。`library.css` 里早有
+   同样的注释（1.69.0 踩过），这次直接照做。单测读 CSS 文本不够——选择器写错、被后面的规则
+   覆盖都看不出来，所以 e2e 里在真浏览器中设一次 `hidden` 看 `getComputedStyle`。
+2. **e2e 里「另一个标签还开着」这条在反证时没报红**。原因是我在 `chrome.tabs.remove` 落定
+   之前就读了 `isClosed()`，那一刻它当然还是 false，断言恒真、等于没测。改成先等 `#status`
+   出现「已关闭」（它是所有 remove 结束后才写的），再检查。**没跑反证的测试，不能算测过。**
+3. **单测里确认框的桩默认返回 `true`**，第 3 节想「只看确认框写了什么」，结果顺手把后面两节
+   要用的标签页真关了，第 5 节直接测不到东西。桩要先设成 `false`，并把这个理由写进注释。
+4. **侧栏寄居的那个标签页会不会被一起关掉**。`manifest` 里 `side_panel` 只有 `default_path`
+   （窗口级，不是 `per-tab`），关掉当前标签页侧栏不会消失——但那一页很可能正是用户在读的。
+   确认框因此把话说全：「关闭「X」里已打开的 N 个标签页？……收藏一条都不会删」。
+5. **侧栏永远没有「全部项目 / 归档」**（`normalizeProject` 会把它们折回「等待整理」），
+   所以这颗按钮实际上一直在。`syncCloseTabsButton()` 里那两个判断是护栏，不是当前分支。
 
 ---
 
@@ -572,7 +645,6 @@ git config http.sslBackend openssl
 
 | 项 | 说明 |
 |---|---|
-| 侧栏「按项目关闭已打开」 | 1.69.0 的入口只在全屏页，侧栏没有 |
 | P1：列表 / 详情分离 + 单条写单条 | `laterOnItems` 只留索引字段，摘要与封面按 id 分键；单键 345KB → ~80KB。需写数据迁移与老导出文件兼容 |
 | P2：卡片视图虚拟滚动或「加载更多」 | 首屏从 700 张降到视口规模，5,000 条仍流畅 |
 | 同站点同标题去重 | 若「标题消失」实为重新打开后 Alt+1 生成重复条目，可加去重（需具体站点复现） |
