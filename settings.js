@@ -236,6 +236,57 @@ async function init() {
       message: t("wipeDoneMsg")
     });
   });
+
+  mountUpdateSection();
+}
+
+// ── 版本与更新 ──────────────────────────────────────────────
+// 只显示「有没有新版」，不替人下载：扩展对自己所在的目录没有写权限，
+// 装不了新代码，最后那一步「替换文件 + 重新加载」永远得人来点。
+function mountUpdateSection() {
+  window.LaterOnUpdateUI?.mount("#updateStrip");
+  const currentEl = document.querySelector("#updateCurrent");
+  const statusEl = document.querySelector("#updateStatus");
+  const checkBtn = document.querySelector("#updateCheck");
+  // 拿不到就留个「—」：这里挂掉会连带后面「检查更新」按钮也不可用。
+  if (currentEl) currentEl.textContent = chrome.runtime.getManifest?.()?.version || "—";
+  if (!statusEl) return;
+
+  const paint = (state) => {
+    if (!state) return;
+    if (state.available) {
+      statusEl.textContent = t("updateNewFound", { version: state.latest?.version || "" });
+      return;
+    }
+    const checked = state.checkedAt ? relativeTime(state.checkedAt) : "";
+    if (state.error) {
+      statusEl.textContent = checked ? t("updateCheckFailedAt", { time: checked }) : t("updateCheckFailed");
+      return;
+    }
+    statusEl.textContent = checked ? t("updateUpToDate", { time: checked }) : t("updateNever");
+  };
+
+  // 先问一次现成状态（不联网）：上次检查的结果页面上要能看见。
+  try {
+    chrome.runtime.sendMessage({ type: "GET_UPDATE_STATE" })
+      .then((response) => { if (response?.ok) paint(response.state); })
+      .catch(() => {});
+  } catch { /* 后台还没起来：留空就行，点按钮再试 */ }
+
+  checkBtn?.addEventListener("click", async () => {
+    // 手动检查期间连点会打出多个请求，也会让状态文字来回跳。
+    checkBtn.disabled = true;
+    statusEl.textContent = t("updateChecking");
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "CHECK_UPDATE" });
+      if (response?.ok) paint(response.state);
+      else statusEl.textContent = t("updateCheckFailed");
+    } catch {
+      statusEl.textContent = t("updateCheckFailed");
+    } finally {
+      checkBtn.disabled = false;
+    }
+  });
 }
 
 // ── 快捷键自检 ──────────────────────────────────────────────

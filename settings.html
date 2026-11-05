@@ -11,6 +11,7 @@
     <link rel="stylesheet" href="theme-vars.css" />
     <link rel="stylesheet" href="dialog.css" />
     <link rel="stylesheet" href="settings.css" />
+    <link rel="stylesheet" href="update-ui.css" />
     <script src="theme.js"></script>
     <script src="i18n.js"></script>
     <script src="dialog.js"></script>
@@ -32,6 +33,8 @@
           <h1 data-i18n="settings">设置</h1>
           <p data-i18n="titleSettings">外观、快捷键、数据与启动方式</p>
         </div>
+        <!-- 有新版本 / 有等待确认的数据迁移（内容由 update-ui.js 画） -->
+        <div id="updateStrip" class="lu-strip" role="status" hidden></div>
         <section class="settings-group">
           <h2 data-i18n="appearance">外观</h2>
           <div class="setting-row">
@@ -191,9 +194,29 @@
           <p class="setting-note" id="webdavFeedback"></p>
           <p class="setting-note" id="webdavLegacyNote" hidden data-i18n="syncLegacyNote">检测到旧配置：地址直接指向数据目录。重新保存后会改成「根地址 + LaterOn/」。</p>
         </section>
+
+        <!-- 版本与更新：只做「告诉你有没有新版」，不替人下载 —— 扩展对自己所在的目录
+             没有写权限，装不了新代码，最后一步永远得人来点「重新加载」。 -->
+        <section class="settings-group">
+          <h2 data-i18n="updateSection">版本与更新</h2>
+          <p class="setting-note" data-i18n="updateNote">这里只向 GitHub 查询「最新版本号」，不发送任何收藏内容，也不带设备信息。</p>
+          <div class="setting-row">
+            <div class="setting-label"><strong data-i18n="updateCurrentLabel">当前版本</strong><span id="updateCurrent">—</span></div>
+            <div class="data-actions">
+              <button id="updateCheck" class="setting-action" type="button" data-i18n="updateCheck">检查更新</button>
+              <a id="updateOpen" class="setting-action" href="https://github.com/masterkimhank/LaterOn/releases/latest" target="_blank" rel="noopener" data-i18n="updateOpen">打开发布页</a>
+            </div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-label"><strong data-i18n="updateAuto">自动检查更新</strong><span data-i18n="updateAutoHint">每天查一次；关掉后只有点「检查更新」才联网</span></div>
+            <label class="switch"><input type="checkbox" data-setting="autoCheckUpdate" /><span class="slider"></span></label>
+          </div>
+          <p class="setting-note" id="updateStatus"></p>
+        </section>
       </main>
     </div>
     <script src="item-store.js"></script>
+    <script src="update-ui.js"></script>
     <script src="settings.js"></script>
     <script src="webdav-settings.js"></script>
   </body>

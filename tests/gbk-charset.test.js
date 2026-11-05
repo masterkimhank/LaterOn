@@ -231,7 +231,15 @@ vm.runInContext(NEEDED, sandbox, { filename: "background-slice.js" });
   console.log("\n── 源码约束 ──");
   // 只看代码行：注释里会解释「为什么不能用 response.text()」，不能算命中。
   const codeOnly = SOURCE.replace(/^\s*\/\/.*$/gm, "");
-  check("后台不再用 response.text() 读 HTML", !/response\.text\(\)/.test(codeOnly));
+  // 检查更新那一段是读 JSON 的，用 .text() 完全正确 —— 它和「读网页 HTML」是两回事，
+  // 得把它从被检查的范围里排除，否则这条断言是在拦一个没问题的写法。
+  const updateFetch = codeOnly.slice(
+    codeOnly.indexOf("async function fetchLatestRelease"),
+    codeOnly.indexOf("async function checkForUpdate")
+  );
+  const withoutUpdate = updateFetch ? codeOnly.replace(updateFetch, "") : codeOnly;
+  check("读网页 HTML 的地方一律不用 response.text()", !/response\.text\(\)/.test(withoutUpdate));
+  check("检查更新读 JSON 才用 .text()（不是 HTML 那条路径）", /response\.text\(\)/.test(updateFetch));
   check("HTML 改读字节后自己解码", /response\.arrayBuffer\(\)/.test(codeOnly) && /decodeHtmlBuffer\(/.test(codeOnly));
 
   console.log(`\n${failed === 0 ? "🎉" : "❌"} 共 ${passed + failed} 项，通过 ${passed}，失败 ${failed}\n`);

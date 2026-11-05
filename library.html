@@ -12,6 +12,7 @@
     <link rel="stylesheet" href="dialog.css" />
     <link rel="stylesheet" href="onboarding.css" />
     <link rel="stylesheet" href="library.css" />
+    <link rel="stylesheet" href="update-ui.css" />
     <script src="theme.js"></script>
     <script src="i18n.js"></script>
     <script src="dialog.js"></script>
@@ -52,6 +53,10 @@
           <kbd>⌘ K</kbd>
         </div>
       </header>
+
+      <!-- 有新版本 / 有等待确认的数据迁移时，这里出现一条提示（内容由 update-ui.js 画）。
+           默认 hidden，后台说没有就一直是 hidden。 -->
+      <div id="updateStrip" class="lu-strip" role="status" hidden></div>
 
       <div class="workspace">
         <aside class="project-sidebar" data-i18n-aria-label="projectNav" aria-label="项目导航">
@@ -228,6 +233,7 @@
     <script src="item-store.js"></script>
     <script src="url-utils.js"></script>
     <script src="tab-navigation.js"></script>
+    <script src="update-ui.js"></script>
     <script src="library.js"></script>
   </body>
 </html>

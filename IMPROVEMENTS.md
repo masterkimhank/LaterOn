@@ -29,6 +29,151 @@
 | — | 2026-10-30 | 新功能 | 添加网页时的进度提示（两个界面 + 图标绿点） | `background.js` `library.html` `library.css` `library.js` `sidepanel.html` `sidepanel.css` `sidepanel.js` `i18n.js` | `save-progress.test.js`（56 项） |
 | — | 2026-10-30 | 修 bug + 新功能 | 多选整组拖进项目；关闭标签页分两档、把「不会关闭」的那些单独列出来；多选加「退出多选」且点别处不再清空 | `library.js` `library.html` `library.css` `dialog.js` `dialog.css` `tab-navigation.js` `sidepanel.js` `i18n.js` | `select-group-drag.test.js`（新增，22 项）；`close-tabs-on-delete.test.js`（27 项）、`sidepanel-delete.test.js`、`select-mode.test.js` 改断言 |
 | 1.75.0 | 2026-10-30 | 发版 | 把 2026-10-30 那两批改动合成一版发出去（添加进度提示 + 图标绿点 / 多选整组拖拽 + 关闭标签分两档 + 退出多选） | `manifest.json` `background.js` `library.*` `sidepanel.*` `dialog.*` `tab-navigation.js` `i18n.js` | `save-progress.test.js`（56 项）、`select-group-drag.test.js`（22 项） |
+| — | 2026-11-05 | 新功能 | 有新版会自己知道：每天查一次、三个界面提示、图标挂 `↑` | `update-check.js` `update-ui.js` `update-ui.css` `background.js` `library.*` `sidepanel.*` `settings.*` `i18n.js` `scripts/version-json.js` `scripts/release.js` `release.yml` | `update-check.test.js`（32 项）、`update-flow.test.js`（52 项） |
+| — | 2026-11-05 | 稳定性 | 跨版本装新代码时，先问一句再动数据（原来是不问就迁） | `migration-plan.js` `background.js` `update-ui.js` `settings.js` | `migration-plan.test.js`（18 项） |
+
+---
+
+## 未发布 — 有新版会自己知道（2026-11-05）
+
+**来源**：使用者问「项目是否能加上自动更新的能力」。追问后确认了四件事：
+装给家人 / 同事也要能收到、跨版本迁移要我先确认、版本数据源两个都试、三个界面都要提醒。
+
+### 先要说清的一件事：这个项目做不到「真自动」
+
+扩展对自己所在的安装目录**没有写权限**，装不了新代码；「加载已解压的扩展程序」这种安装方式
+Chrome **不会**自动更新它；`manifest.update_url` 对未打包扩展**不生效**（那是给商店条目用的），
+而自托管 CRX + 组策略能真自动，代价是要么换 ID（等于全量用户数据失联）、要么去改注册表
+（家人那几台电脑上没法做）。所以只有三档可选：
+
+| 档位 | 能做到 | 代价 |
+|---|---|---|
+| A 商店 / 组策略自托管 CRX | 真自动，用户零操作 | 换 ID 或改注册表 |
+| **B 检测 + 一键打开下载（本次做的）** | 自己知道、点两下升级 | 最后一步「重新加载」还得人点 |
+| C 只提醒 | 最省事 | 连下载页都不给 |
+
+选 B。**不新增任何权限**：只 `fetch` 一个公开 JSON、用 `chrome.tabs.create` 打开 Release 页，
+不需要 `downloads`。
+
+### 根因
+
+发版这件事，只有维护者这边有感知：`release.js` 跑完、CI 绿了、Release 挂着，
+而使用者那边永远停在当初装的那个版本——因为他没有理由去翻 Releases 页面。
+给家人装的那几台更极端：装完就再也不会有人打开那个页面了。
+
+### 改法
+
+**版本比较必须按数字段比。** 字符串比 `"1.10.0" < "1.9.0"`，这是最容易埋进去的错。
+`parseVersion` 拆成 `parts` 数组逐段比，`-my.N` 后缀**不参与比较**（`manifest.version` 只允许数字和点，
+后缀只出现在 git tag 上），只在展示时带上。
+
+**两个来源兜底。** `api.github.com/repos/.../releases/latest` 最准，但按 IP 匿名限流 60 次/小时
+——同一出口 IP 后面可能有很多人；所以再挂一个 `releases/latest/download/version.json`
+（Release 里的静态文件，不吃限流）。`sources()` 返回有序列表，`fetchLatestRelease` 逐个试，
+每个都套 `AbortController` + 8 秒超时，失败就 `continue` 到下一个。**新增 `scripts/version-json.js`
+就是为了让第二个来源有东西可读**：发版时生成 `{version, tag, pageUrl, publishedAt}` 一起传上去，
+并校验 tag 版本与 `manifest.json` 一致（不一致直接退出 1，宁可不发也不发个错版本号）。
+
+**24 小时闸门放 `chrome.alarms` 而不是 `setTimeout`。** MV3 的 Service Worker 会被回收，
+`setTimeout` 跟着一起没；alarms 是浏览器级的，SW 重启后还在。注意 `ensureUpdateAlarm` 要先
+`get` 再 `create`——每次 SW 启动都 `create` 一次会把周期重置成「1 分钟后再跑」，
+等于每开一次浏览器就查一次。
+
+**角标有基准态，别被反馈覆盖。** 原来收尾时会 `setBadgeText({text:""})` 抹掉一切，
+现在拆成 `applyBaseBadge()`（有新版画 `↑`，没有就清空）和收藏反馈（`+3` / `✓` / `!`）。
+`resetActionAppearance` 改成回落到基准态，且反馈期间（`actionFeedbackUntil` 未到）不许覆盖——
+否则「刚加完 3 篇」的 `+3` 会被一次后台检查刷成 `↑`。
+
+**提示条一个模块，三个页面共用。** `update-ui.js` 只认 `mount(selector)`，
+自己发 `GET_UPDATE_STATE` 拉初值、监听 `UPDATE_STATE` / `MIGRATIONS_DONE` 两条广播。
+`chrome.runtime.sendMessage` 在**没有接收端时会 reject**，一律 try/catch 包住——提示条是锦上添花，
+不能因为它把页面搞崩。
+
+**动到的文件**
+
+| 文件 | 改了什么 |
+|---|---|
+| `update-check.js` | 新增，纯函数无 chrome 依赖：版本解析 / 比较 / 两个来源的定义与解析 / `evaluate(最新, 当前, 忽略名单)` |
+| `migration-plan.js` | 新增，纯函数：schema 号 + 迁移清单 + `plan()` 决定要不要问 |
+| `update-ui.js` / `update-ui.css` | 新增，三页面共用的提示条（两种形态：新版本 / 迁移确认） |
+| `background.js` | 抓取（多来源 + 超时）、24h 闸门、alarms、`applyBaseBadge`、忽略名单、四条消息分支 |
+| `library.html/.js`、`sidepanel.html/.js`、`settings.html/.js` | 挂提示条；设置页新增「版本与更新」区（当前版本 / 立即检查 / 自动检查开关） |
+| `i18n.js` | 19 条中英文案 |
+| `scripts/version-json.js`、`scripts/release.js`、`.github/workflows/release.yml` | 发版时生成并附带 `version.json` |
+| `scripts/build-release.py` | 白名单加 4 个新文件（**漏一个就是装好后白屏**） |
+
+### 验证与反证
+
+- 单元测试 **82/82**（51s，新增 3 个测试文件）；端到端 **6/6** spec（103s）。
+- 反证注入 4 处，共 **12 条真红**，恢复后全绿：
+  1. 让第一个来源失败后不 `continue` → 「退回第二个来源」红；
+  2. 删掉 `plan()` 里的结构判断 → 「有老数据必须问」红；
+  3. 清空忽略名单比对 → 「忽略过的不再提示」红；
+  4. 删掉 `.lu-strip[hidden]` 规则 → 静态 CSS 断言红。
+- **真 Chromium 实测**（Playwright 装真扩展）：收藏库提示条 `{x:0,y:78,w:1265,h:48}`、
+  设置页 `{x:300,y:211,w:680,h:46}`、侧栏 `{x:13,y:72,w:354,h:42.5}`；
+  工具栏角标 `{"text":"↑","title":"LaterOn — 有新版本 1.76.0"}`。
+- **截图抓到一处 jsdom 看不见的缺陷**：迁移条的「稍后」借用了 `.lu-strip-close`（24px 圆点），
+  两个汉字被挤成竖排——改用文字链接样式，并给两个按钮都加 `white-space:nowrap`。
+
+### 考虑过但没做的
+
+- **不做静默下载 + 自动装**：做不到，见上面「先要说清的一件事」。
+- **不加 `downloads` 权限直接下 zip**：省一次跳转，但多一条高敏权限，多一个弹窗解释成本；
+  Release 页上本来就有 zip，打开它就够了。
+- **不用 `chrome.storage.session` 存检查结果**：SW 一回收就没了，跟没有一样。
+
+---
+
+## 未发布 — 跨版本迁移先问一句（2026-11-05）
+
+**来源**：自动更新那个追问里，使用者选了「跨版本迁移要我先确认」。
+
+### 根因
+
+原来的迁移是**无条件**的：`ensureLegacyCleanup()` 挂在 Service Worker 启动时，
+只要检测到老形状的数据就直接改。在「装一次用到底」的年代这没问题（跟代码同一个版本，
+改法不会错配）；但一旦引入「装新代码、数据还是三个版本前的」，就变成**先改数据再让人看到**——
+而分两处存、剥索引字段这类操作是不可逆的，改错了没有后悔药。
+
+### 改法
+
+**门禁三层：schema 号 → 只读探测 → 待确认标记。**
+
+- `migration-plan.js` 里 `SCHEMA = 1` 和一份 `MIGRATIONS` 清单，每条带 `id / schema / structural`。
+- `probeDataMigrations()` **只读**：看索引里有没有 `contentHtml / wordCount / byline`（老形状），
+  看 `ItemStore.DETAIL_FIELDS` 对应的字段是不是还躺在索引里。**探测阶段一个字节都不写。**
+- `plan()` 输出 `{schema, pending, needsConfirm, silent}`：`pending` 为空就**静默**把 schema 标上
+  （空库和早已迁完的都走这条路，永远不打扰人）；有 `structural` 的待办就挂
+  `laterOnMigrationPending` 标记，页面弹提示条，**数据保持原样**。
+- 点「现在升级」才发 `RUN_MIGRATIONS`，在写队列里按 `schema` 升序跑完。
+  必须是**一次 `queueItemWrite` 内整体跑完**——`queueItemWrite` 不可重入，重入会死锁。
+
+**顺带挪出去的一件事。** `laterOnRecentItems` 的清理原本塞进迁移里，但它不影响数据结构、
+删了也不会坏，挂在门禁后面等于「不点确认就永远不清」。改成启动时无条件清掉。
+（这一改当场把 `omnibox-action-state.test.js` 撞红了，正好说明迁移边界被划清楚了。）
+
+### 动到的文件
+
+| 文件 | 改了什么 |
+|---|---|
+| `migration-plan.js` | 新增，纯函数：schema、迁移清单、`plan()` |
+| `background.js` | `probeDataMigrations` / `planDataMigrations` / `readMigrationPending` / `runPendingMigrations`；删掉 `ensureLegacyCleanup`；`RUN_MIGRATIONS` 分支成功后广播 `MIGRATIONS_DONE` |
+| `update-ui.js` | 第二种形态：导出备份 / 现在升级 / 稍后；升级完成 `location.reload()` |
+| `settings.js` | 版本区一并显示迁移状态 |
+
+### 验证与反证
+
+- 「有老形状数据 → 挂标记且**数据一字节没动**」写成了断言（不是靠肉眼看）。
+- 反证：把 `plan()` 的 `needsConfirm` 恒设 false → 「有老数据必须问」与「不动数据」两条一起红。
+- 真浏览器走完整链路：初始 `pending` 有条目 → 点「现在升级」→
+  `{"pending":null,"schema":1}` → 页面重载后提示条换成「有新版本」那条。
+
+### 踩过的坑
+
+- **模块顶层不能同步调 `chrome.storage.local.remove`**：几个测试桩里没有这个方法，
+  一抛错整个后台就起不来，4 个测试文件直接崩（`article-identity` / `auto-clean` /
+  `item-mutation` / `save-concurrency`）。包成 `async function dropRetiredKeys()` + try/catch。
 
 ---
 

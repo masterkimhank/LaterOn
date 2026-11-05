@@ -65,6 +65,11 @@ jobs:
       - name: 打包（allowlist + 回读校验）
         run: python3 scripts/build-release.py
 
+      # 检查更新的兜底数据源：地址固定为 /releases/latest/download/version.json。
+      # 少上传这一个文件，扩展的第二个来源就会 404（第一个来源被限流时就没得退了）。
+      - name: 生成 version.json
+        run: node scripts/version-json.js --tag "$TAG" --out dist/version.json
+
       - name: 创建 Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -84,7 +89,8 @@ jobs:
           fi
           # --verify-tag：tag 不存在就失败，不会凭空造一个；标题带 -my.N，
           # 免得同一个版本号发过几次后列表里出现两条一模一样的标题
-          gh release create "$TAG" "$ZIP" \
+          test -f dist/version.json || { echo "没有 version.json，检查更新会少一个来源"; exit 1; }
+          gh release create "$TAG" "$ZIP" dist/version.json \
             --verify-tag \
             --title "${TAG#v}（二次开发版）" \
             --notes-file "$RUNNER_TEMP/release-notes.md"

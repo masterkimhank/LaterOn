@@ -194,6 +194,19 @@
       syncTestCleanup: "连接正常，但清理临时文件失败（不影响使用）",
       syncCancelled: "同步已被新的设置取消",
       syncWaitingForIdle: "等本机安静 30 秒后再上传",
+      // ── 版本与更新 / 数据迁移 ──
+      updateSection: "版本与更新", updateNote: "这里只向 GitHub 查询「最新版本号」，不发送任何收藏内容，也不带设备信息。",
+      updateCurrentLabel: "当前版本", updateCheck: "检查更新", updateOpen: "打开发布页",
+      updateAuto: "自动检查更新", updateAutoHint: "每天查一次；关掉后只有点「检查更新」才联网",
+      updateChecking: "正在检查…", updateNever: "还没有检查过。",
+      updateUpToDate: "已是最新版本。上次检查：{time}",
+      updateNewFound: "发现新版本 {version}，可以在上方提示条里打开发布页。",
+      updateCheckFailed: "这次没查到（网络不通，或 GitHub 访问不了）。",
+      updateCheckFailedAt: "这次没查到（网络不通，或 GitHub 访问不了）。上次成功：{time}",
+      updateAvailable: "有新版本 {version} 可用", updateViewRelease: "查看新版",
+      migrationBody: "这次升级要调整已有数据的存放方式（收藏内容不变，但会整体重写一遍）。建议先导出一份备份，再继续。",
+      migrationExport: "先去导出备份", migrationRun: "现在升级", migrationRunning: "正在升级数据…",
+      migrationLater: "稍后", migrationFailed: "升级失败，数据没有改动：{error}",
     },
     en: {
       unread: "Unread", read: "Read", all: "All", allProjects: "All content", allProjectsOverview: "All projects", inbox: "Inbox",
@@ -382,6 +395,18 @@
       syncTestCleanup: "Connection works, but the temporary file could not be removed",
       syncCancelled: "Sync was cancelled by a newer configuration",
       syncWaitingForIdle: "Waiting 30 seconds of quiet before uploading",
+      updateSection: "Version & updates", updateNote: "Only asks GitHub for the latest version number — no saved pages, no device details.",
+      updateCurrentLabel: "Current version", updateCheck: "Check for updates", updateOpen: "Open releases",
+      updateAuto: "Check automatically", updateAutoHint: "Once a day; when off, nothing goes online until you press Check",
+      updateChecking: "Checking…", updateNever: "Not checked yet.",
+      updateUpToDate: "You’re on the latest version. Last checked: {time}",
+      updateNewFound: "Version {version} is available — open the releases page from the banner above.",
+      updateCheckFailed: "Couldn’t check this time (no network, or GitHub is unreachable).",
+      updateCheckFailedAt: "Couldn’t check this time (no network, or GitHub is unreachable). Last success: {time}",
+      updateAvailable: "Version {version} is available", updateViewRelease: "Get it",
+      migrationBody: "This update rearranges how existing data is stored (your saved pages stay the same). Export a backup before continuing.",
+      migrationExport: "Export backup", migrationRun: "Upgrade now", migrationRunning: "Upgrading data…",
+      migrationLater: "Later", migrationFailed: "Upgrade failed, nothing was changed: {error}",
     }
   };
   let language = "zh-CN";

@@ -822,6 +822,9 @@ function askSaveProgress() {
 }
 askSaveProgress();
 
+// 版本提示（有新版本 / 待确认的数据迁移）。三个界面共用 update-ui.js。
+globalThis.LaterOnUpdateUI?.mount("#updateStrip");
+
 saveButton.addEventListener("click", async () => {
   if (!currentItem || currentItemId) return;
   saveButton.disabled = true;

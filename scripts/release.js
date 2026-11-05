@@ -174,10 +174,16 @@ if (forcedTag && forcedTag !== true) {
 }
 const tagExists = run("git", ["rev-parse", "--verify", `refs/tags/${tag}`]).ok;
 
+// 检查更新的兜底数据源：CI 与本地两条发版路径都要带上，否则扩展的第二个来源 404。
+// 放在 tag 定下来之后——version.json 里的 pageUrl 要指向这一版的具体 tag。
+const versionJsonPath = path.join(DIST, "version.json");
+const versionJson = run("node", ["scripts/version-json.js", "--tag", tag, "--out", versionJsonPath]);
+if (!versionJson.ok) fail(`生成 version.json 失败：\n${versionJson.out}`);
+
 console.log(`\n${"=".repeat(52)}`);
 console.log(`版本   ${version}`);
 console.log(`分支   ${branch}`);
-console.log(`产物   dist/LaterOn-${version}.zip（${zipKb} KB）`);
+console.log(`产物   dist/LaterOn-${version}.zip（${zipKb} KB）+ dist/version.json`);
 console.log(`标签   ${tag}${tagExists ? "（已存在，复用它）" : tags.length ? `（同版本已有 ${tags.join(", ")}）` : ""}`);
 console.log(`仓库   ${repoSlug()}`);
 
@@ -228,7 +234,7 @@ for (const args of [["push", "origin", branch], ["push", "origin", tag]]) {
 
 console.log("· 创建 GitHub Release…");
 const rel = run(gh, [
-  "release", "create", tag, zipPath,
+  "release", "create", tag, zipPath, versionJsonPath,
   "--repo", slug,
   // 标题带上 -my.N：同一个版本号可能发过好几次（my.1 / my.2），
   // 只用版本号会让 Releases 列表里出现两条一模一样的标题。

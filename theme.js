@@ -12,6 +12,7 @@
     autoCleanDays: 30          // 标为已读后多少天自动清除（30–180 天）
     ,closeTabsOnDelete: false  // 删除收藏时，是否把浏览器里还开着的同一网页的标签页一起关掉（默认关）
     ,language: "zh-CN"         // zh-CN | en
+    ,autoCheckUpdate: true     // 每天向 GitHub 问一次最新版本号（只问版本号，不带任何收藏内容）
   };
 
   function resolveTheme(theme) {

@@ -315,6 +315,10 @@ function askSaveProgress() {
 }
 askSaveProgress();
 
+// 版本提示（有新版本 / 待确认的数据迁移）。三个界面共用 update-ui.js，
+// 这样「忽略这个版本」在哪个界面点都一样生效。
+globalThis.LaterOnUpdateUI?.mount("#updateStrip");
+
 init();
 
 function normalizeItems(list) {

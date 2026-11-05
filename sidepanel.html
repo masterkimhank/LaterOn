@@ -89,6 +89,7 @@
     <link rel="stylesheet" href="theme-vars.css" media="print" data-boot-style />
     <link rel="stylesheet" href="sidepanel.css" media="print" data-boot-style />
     <link rel="stylesheet" href="onboarding.css" media="print" data-boot-style />
+    <link rel="stylesheet" href="update-ui.css" media="print" data-boot-style />
     <noscript>
       <!-- 万一脚本被禁用，样式照样要生效（此时没人去切换 media）。 -->
       <link rel="stylesheet" href="theme-vars.css" />
@@ -103,6 +104,7 @@
     <script src="item-store.js" defer></script>
     <script src="url-utils.js" defer></script>
     <script src="tab-navigation.js" defer></script>
+    <script src="update-ui.js" defer></script>
     <script src="sidepanel.js" defer></script>
   </head>
   <body class="booting">
@@ -116,6 +118,8 @@
     <main>
       <!-- 打开明显偏慢时，这里直接把「慢在哪一步」写出来（不用去设置页翻） -->
       <div id="slowBanner" class="slow-banner" role="status" hidden></div>
+      <!-- 有新版本 / 有等待确认的数据迁移（内容由 update-ui.js 画） -->
+      <div id="updateStrip" class="lu-strip is-compact" role="status" hidden></div>
 
       <!-- 骨架屏：数据还没到时，按真实界面的轮廓先画一份灰色占位
            （顶部收藏条 / 搜索框 / 筛选 / 项目 / 卡片），形状和真界面对齐，

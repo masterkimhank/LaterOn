@@ -27,7 +27,10 @@ const backgroundBytes = Buffer.byteLength(background.replace(/\r\n/g, "\n"));
 // 预算 102000 → 110000：1.75.0 的「添加进度」——进度广播（含 GET_SAVE_PROGRESS 补票）、
 // 串行化的图标绿点合成，又加了约 7.2KB；比前几次都肥，所以留了约 1KB 余量。
 // 仍然守住的底线是：网页内执行的大函数一律不许搬回来（下面三条断言）。
-assert.ok(backgroundBytes < 110000, `background.js 重新膨胀到 ${backgroundBytes} bytes`);
+// 预算 110000 → 124000：检查更新（双来源兜底 + 状态机 + 角标基准态）与
+// 「数据格式迁移先探测再问」两块接线加了约 10.7KB。
+// 仍然守住的底线是：网页内执行的大函数一律不许搬回来（下面三条断言）。
+assert.ok(backgroundBytes < 124000, `background.js 重新膨胀到 ${backgroundBytes} bytes`);
 
 assert.ok(metadata.includes("function extractPageMetadataForShortcut"));
 assert.ok(translation.includes("function togglePageTranslation"));

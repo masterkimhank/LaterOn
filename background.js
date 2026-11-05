@@ -1,4 +1,4 @@
-importScripts("item-store.js", "url-utils.js", "reading-position-background.js", "webdav-sync-core.js", "webdav-directory.js", "webdav-sync.js");
+importScripts("item-store.js", "url-utils.js", "reading-position-background.js", "webdav-sync-core.js", "webdav-directory.js", "webdav-sync.js", "update-check.js", "migration-plan.js");
 const normalizeUrl = LaterOnUrl.normalize;
 // url-utils.js 和 background.js 一起打包，这三个函数一定在。这里给出一份保底，
 // 是为了让「只注入了 normalize 的测试桩」退化成「只按网址去重」（与旧行为一致），
@@ -161,13 +161,24 @@ chrome.tabs.onRemoved.addListener((tabId) => injectedCssTabs.delete(tabId));
 // 进度或错误会短暂出现，结束后恢复无角标的默认状态。
 let actionFeedbackTimer = null;
 let actionFeedbackUntil = 0;
+// 有新版时角标常驻一个「↑」。收藏反馈（+3 / ✓ / !）照旧短暂盖上去，结束后回落到它——
+// 所以「恢复默认外观」必须回落到这个基准态，而不是无条件清空角标。
+let pendingUpdate = null;
+
+async function applyBaseBadge() {
+  if (Date.now() < actionFeedbackUntil) return;
+  const en = await usesEnglish();
+  const baseTitle = pendingUpdate
+    ? (en ? `LaterOn — version ${pendingUpdate.version} is available` : `LaterOn — 有新版本 ${pendingUpdate.version}`)
+    : (en ? "Open the LaterOn side panel" : "打开 LaterOn 侧栏");
+  await chrome.action?.setBadgeText?.({ text: pendingUpdate ? "↑" : "" });
+  if (pendingUpdate) await chrome.action?.setBadgeBackgroundColor?.({ color: "#e8590c" });
+  await chrome.action?.setTitle?.({ title: baseTitle });
+}
 
 async function resetActionAppearance() {
   if (Date.now() < actionFeedbackUntil) return;
-  const en = await usesEnglish();
-  const baseTitle = en ? "Open the LaterOn side panel" : "打开 LaterOn 侧栏";
-  await chrome.action?.setBadgeText?.({ text: "" });
-  await chrome.action?.setTitle?.({ title: baseTitle });
+  await applyBaseBadge();
 }
 
 async function showActionFeedback(text, color, duration) {
@@ -297,6 +308,173 @@ let workingIconChain = Promise.resolve();
 function setWorkingIcon(on) {
   workingIconChain = workingIconChain.then(() => applyWorkingIcon(on)).catch(() => {});
   return workingIconChain;
+}
+
+// ── 检查更新：只问「最新版本号」，不问别的 ───────────────────
+// 为什么不自己下载新版：扩展对自己所在的目录没有任何写权限，装不上；最后那一步
+// 「替换文件 + 重新加载」永远得由人来做。所以这里只做到「告诉你有新版 + 把页面打开」。
+// 两个来源见 update-check.js：GitHub API 信息全但按 IP 限流，version.json 是静态文件兜底。
+let updateStateCache = null;
+
+async function readUpdateState() {
+  if (updateStateCache) return updateStateCache;
+  const stored = (await chrome.storage.local.get(UPDATE_KEY))[UPDATE_KEY];
+  updateStateCache = {
+    checkedAt: Number(stored?.checkedAt) || 0,
+    latest: stored?.latest || null,
+    ignored: Array.isArray(stored?.ignored) ? stored.ignored.slice(-20) : [],
+    error: typeof stored?.error === "string" ? stored.error : ""
+  };
+  return updateStateCache;
+}
+
+// 没有任何扩展页面打开时 sendMessage 会 reject（"Receiving end does not exist"），
+// 那是常态不是错误。
+function broadcastToPages(message) {
+  try {
+    const sent = chrome.runtime.sendMessage(message);
+    if (sent && typeof sent.catch === "function") sent.catch(() => {});
+  } catch { /* 同上 */ }
+}
+
+async function publicUpdateState() {
+  const state = await readUpdateState();
+  const current = chrome.runtime.getManifest().version;
+  const decision = globalThis.LaterOnUpdate.evaluate(state.latest, current, state.ignored);
+  return {
+    current,
+    checkedAt: state.checkedAt,
+    error: state.error,
+    latest: decision.latest || null,
+    available: decision.available,
+    reason: decision.reason
+  };
+}
+
+async function saveUpdateState(next) {
+  updateStateCache = next;
+  await chrome.storage.local.set({ [UPDATE_KEY]: next });
+  await refreshUpdateBadge();
+  broadcastToPages({ type: "UPDATE_STATE", state: await publicUpdateState() });
+}
+
+async function refreshUpdateBadge() {
+  const state = await readUpdateState();
+  const decision = globalThis.LaterOnUpdate.evaluate(state.latest, chrome.runtime.getManifest().version, state.ignored);
+  pendingUpdate = decision.available ? decision.latest : null;
+  await applyBaseBadge();
+}
+
+// 依次试每个来源，第一个成功就停。全部失败返回 null —— 调用方据此显示「检查失败」，
+// 不抛错、不弹窗：家里人装的机器不该因为网络问题天天报红。
+async function fetchLatestRelease() {
+  for (const source of globalThis.LaterOnUpdate.sources()) {
+    let timer = null;
+    try {
+      const controller = new AbortController();
+      timer = setTimeout(() => controller.abort(), UPDATE_TIMEOUT);
+      const response = await fetch(source.url, {
+        signal: controller.signal,
+        cache: "no-store",
+        // 公开数据，不带凭据：万一地址被改坏，也不至于把谁的登录态发出去。
+        credentials: "omit",
+        headers: source.headers
+      });
+      if (!response.ok) continue;
+      const latest = source.parse(await response.text());
+      if (latest) return latest;
+    } catch {
+      // 超时 / 断网 / JSON 坏掉：换下一个来源。
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return null;
+}
+
+async function checkForUpdate({ force = false } = {}) {
+  const state = await readUpdateState();
+  if (!force) {
+    const settings = (await chrome.storage.local.get(SETTINGS_KEY))[SETTINGS_KEY] || {};
+    if (settings.autoCheckUpdate === false) return { skipped: "disabled" };
+    // service worker 每次被唤醒都会走到这里，靠这条挡住重复请求。
+    if (state.checkedAt && Date.now() - state.checkedAt < UPDATE_INTERVAL) return { skipped: "recent" };
+  }
+  const latest = await fetchLatestRelease();
+  await saveUpdateState({
+    ...state,
+    checkedAt: Date.now(),
+    error: latest ? "" : "unreachable",
+    // 没查到就保留上一次的结果：断网时不该把「有新版本」这个已经知道的事实抹掉。
+    latest: latest || state.latest
+  });
+  return { ok: !!latest, latest };
+}
+
+async function ignoreUpdate(version) {
+  const target = String(version || "").trim();
+  if (!target) return;
+  const state = await readUpdateState();
+  const ignored = [...state.ignored.filter((entry) => entry !== target), target].slice(-20);
+  await saveUpdateState({ ...state, ignored });
+}
+
+// ── 数据格式迁移：先探测，再问 ───────────────────────────────
+// 只读探测：现在这一份数据里到底有没有「老形状」的字段。没有任何东西要迁的话，
+// 直接把 schema 版本标上去 —— 新装的机器、早就迁完的机器都不会看到提示。
+async function probeDataMigrations() {
+  const stored = (await chrome.storage.local.get(STORAGE_KEY))[STORAGE_KEY];
+  const items = Array.isArray(stored) ? stored : [];
+  return {
+    "legacy-content": items.some((item) => item && ("contentHtml" in item || "wordCount" in item || "byline" in item)),
+    "details-split": items.some((item) => item && item.id && ItemStore.DETAIL_FIELDS.some((field) => field in item))
+  };
+}
+
+const MIGRATION_RUNNERS = {
+  // 两个迁移都必须在写队列里整体跑：它们都是「读整份索引 → 改写」，
+  // 和自动清理交叉执行会互相覆盖。注意队列不可重入——这里只能排一次。
+  "legacy-content": () => queueItemWrite(async () => {
+    await cleanupLegacyContent();
+    await chrome.storage.local.set({ laterOnCleanupV165: true });
+  }),
+  "details-split": () => queueItemWrite(migrateLegacyDetails)
+};
+
+async function planDataMigrations() {
+  const stored = (await chrome.storage.local.get(SCHEMA_KEY))[SCHEMA_KEY];
+  const plan = globalThis.LaterOnMigrations.plan({ storedSchema: stored, probes: await probeDataMigrations() });
+  if (plan.silent) {
+    if (Number(stored) !== plan.schema) await chrome.storage.local.set({ [SCHEMA_KEY]: plan.schema });
+    await chrome.storage.local.remove(MIGRATION_PENDING_KEY);
+    return { pending: [], needsConfirm: false };
+  }
+  const pending = { ids: plan.pending, schema: plan.schema, needsConfirm: plan.needsConfirm, since: Date.now() };
+  await chrome.storage.local.set({ [MIGRATION_PENDING_KEY]: pending });
+  return pending;
+}
+
+async function readMigrationPending() {
+  const stored = (await chrome.storage.local.get(MIGRATION_PENDING_KEY))[MIGRATION_PENDING_KEY];
+  return stored && Array.isArray(stored.ids) && stored.ids.length ? stored : null;
+}
+
+async function runPendingMigrations() {
+  const pending = await readMigrationPending();
+  if (!pending) return { ok: true, ran: 0 };
+  try {
+    for (const id of pending.ids) {
+      const runner = MIGRATION_RUNNERS[id];
+      if (runner) await runner();
+    }
+    await chrome.storage.local.set({ [SCHEMA_KEY]: pending.schema });
+    await chrome.storage.local.remove(MIGRATION_PENDING_KEY);
+    return { ok: true, ran: pending.ids.length };
+  } catch (error) {
+    // 失败就把待确认标记留着：下次启动还会提示，数据也还停在原样
+    // （每个迁移都是「先写详情、后写索引」并走 writePatch，中途失败不会把摘要删掉）。
+    return { ok: false, error: String(error?.message || error) };
+  }
 }
 
 // ── 地址栏搜索：输入 `lo` + 空格后直接查 LaterOn ─────────────
@@ -482,6 +660,18 @@ const CLEAN_MIN_DAYS = 30;
 const CLEAN_MAX_DAYS = 180;
 const CLEAN_DEFAULT_DAYS = 30;
 
+// ── 检查更新 ───────────────────────────────────────────────
+// 只在本地记「上次问过是几点」，一天最多真发一次请求。请求内容只有「最新版本号」，
+// 不带收藏内容、不带设备标识；设置里可以关掉（autoCheckUpdate）。
+const UPDATE_KEY = "laterOnUpdateState";
+const UPDATE_ALARM = "laterOnUpdateCheck";
+const UPDATE_INTERVAL = 24 * 60 * 60 * 1000;  // 两次自动检查之间至少隔一天
+const UPDATE_TIMEOUT = 8000;                  // 单个来源的超时；两条加起来最多 16 秒
+
+// ── 数据格式迁移（先探测，再问）──────────────────────────────
+const SCHEMA_KEY = "laterOnDataSchema";
+const MIGRATION_PENDING_KEY = "laterOnMigrationPending";
+
 function normalizeCleanDays(value) {
   const days = Number(value);
   if (!Number.isFinite(days)) return CLEAN_DEFAULT_DAYS;
@@ -565,13 +755,35 @@ async function migrateLegacyDetails() {
 if (chrome.alarms) {
   chrome.alarms.onAlarm?.addListener((alarm) => {
     if (alarm?.name === CLEAN_ALARM) purgeExpiredItems().catch(() => {});
+    if (alarm?.name === UPDATE_ALARM) checkForUpdate().catch(() => {});
   });
   chrome.alarms.create?.(CLEAN_ALARM, { delayInMinutes: 2, periodInMinutes: 720 });
 }
+// 更新检查的闹钟别每次唤醒都重建：同名 create 会把周期重置，而 service worker
+// 一天会被唤醒几十次——那样 24 小时的闹钟可能永远等不到下一次。
+async function ensureUpdateAlarm() {
+  try {
+    const existing = await chrome.alarms?.get?.(UPDATE_ALARM);
+    if (existing) return;
+    await chrome.alarms?.create?.(UPDATE_ALARM, { delayInMinutes: 1, periodInMinutes: 1440 });
+  } catch { /* 没有 alarms 就算了：启动时那一次检查仍然有效 */ }
+}
+ensureUpdateAlarm();
+// 先用存着的状态点亮角标（断网时也能看到「上次查到的有新版本」），再决定要不要真去问。
+refreshUpdateBadge().catch(() => {});
+checkForUpdate().catch(() => {});
 // 扩展启动 / service worker 每次被唤醒时也顺手扫一遍。
 purgeExpiredItems().catch(() => {});
-// 迁移排进同一条写队列：它和自动清理都要「读整份索引 → 改写」，交叉跑会互相覆盖。
-queueItemWrite(migrateLegacyDetails).catch(() => {});
+// 「最近在看」已撤下，那个 id 列表是死数据。它不属于收藏内容，删它不需要谁确认，
+// 所以放在迁移门禁外面无条件清掉（以前挂在 1.14.0 那次迁移里，现在迁移本身要等确认）。
+// 包一层 try/catch：这是模块顶层，storage 少一个方法就会同步抛错，
+// 整个 service worker 都起不来——为了删一个废弃的键把扩展弄挂，不值得。
+async function dropRetiredKeys() {
+  try { await chrome.storage.local.remove("laterOnRecentItems"); } catch { /* 删不掉就算了，它只是个废弃的 id 列表 */ }
+}
+dropRetiredKeys().catch(() => {});
+// 数据格式迁移不再直接跑：先只读探测「有没有东西要迁」，有就停下来问（见 planDataMigrations）。
+planDataMigrations().catch(() => {});
 // 设置里把天数调小了立即生效（不用等下一次定时）。
 chrome.storage.onChanged?.addListener((changes, area) => {
   if (area === "local" && changes[SETTINGS_KEY]) purgeExpiredItems().catch(() => {});
@@ -593,10 +805,8 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 // 工具栏图标的左键行为由上面的 setPanelBehavior 交给浏览器原生处理：
 // 点击直接打开 / 聚焦 LaterOn 侧栏，不再经过缩略图 popup。
 
-// 一次性迁移（1.14.0）：清掉旧版本保存的网页正文字段。
-// 不依赖 onInstalled —— 因为「重新加载扩展」不会触发 onInstalled，
-// 这里放在脚本启动时执行，并用标记位保证只真正清理一次。
-ensureLegacyCleanup().catch(() => {});
+// 一次性迁移（1.14.0）现在也走 planDataMigrations：它属于「会删掉已有字段」的结构性迁移，
+// 得先探测、必要时问一句（见上面 MIGRATION_RUNNERS 里的 legacy-content）。
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   // 页面刚打开时问一句「现在有没有正在进行的添加」。
@@ -605,6 +815,37 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === "GET_SAVE_PROGRESS") {
     sendResponse({ ok: true, progress: saveProgressState });
     return false;
+  }
+  // 页面打开时问一句：有没有新版本 / 有没有待确认的数据迁移。
+  // 两件事一起返回，因为三个界面都要在同一处画提示条，分两次往返只会让提示晚半拍出现。
+  if (message.type === "GET_UPDATE_STATE") {
+    Promise.all([publicUpdateState(), readMigrationPending()])
+      .then(([state, migration]) => sendResponse({ ok: true, state, migration }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+  if (message.type === "CHECK_UPDATE") {
+    checkForUpdate({ force: true })
+      .then(() => publicUpdateState())
+      .then((state) => sendResponse({ ok: true, state }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+  if (message.type === "IGNORE_UPDATE") {
+    ignoreUpdate(message.version)
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+  if (message.type === "RUN_MIGRATIONS") {
+    runPendingMigrations()
+      .then((result) => {
+        // 迁移改了数据形状，页面手里的那批条目还是旧的：让它们自己重新加载。
+        if (result.ok) broadcastToPages({ type: "MIGRATIONS_DONE" });
+        sendResponse(result);
+      })
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
   }
   if (message.type === "MUTATE_ITEMS") {
     mutateItems(message)
@@ -2141,16 +2382,6 @@ async function readTabMetadata(tab) {
   } catch {
     return null;
   }
-}
-
-async function ensureLegacyCleanup() {
-  const flagKey = "laterOnCleanupV165";
-  const stored = await chrome.storage.local.get(flagKey);
-  if (stored[flagKey]) return;
-  await cleanupLegacyContent();
-  // “最近在看”已撤下；升级时顺手删除曾经保存的 id 列表，不留下无用数据。
-  await chrome.storage.local.remove("laterOnRecentItems");
-  await chrome.storage.local.set({ [flagKey]: true });
 }
 
 // 一次性迁移清理：1.14.0 起不再保存网页正文，把旧版本可能残留的

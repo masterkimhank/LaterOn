@@ -53,6 +53,12 @@ RUNTIME_FILES = (
     "theme.js",
     "translation.css",
     "url-utils.js",
+    # 检查更新与数据迁移：background 用 importScripts 起前两个；update-ui.* 由三个页面引用。
+    # 同样不在 manifest 里，白名单漏了 = 装上去「检查更新」整块失灵。
+    "update-check.js",
+    "migration-plan.js",
+    "update-ui.js",
+    "update-ui.css",
     # 多设备同步：这三个是 service worker 里 importScripts 起来的，不进包就是 404；
     # webdav-settings.js 由 settings.html 引用，同样不在 manifest 校验范围里，必须手加。
     "webdav-sync-core.js",
