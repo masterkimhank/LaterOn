@@ -133,7 +133,15 @@ const ORDER_KEY = "laterOnOrder";
 // 收藏条目里只记 local://<id> 指针；清除过期收藏时要把对应封面也删掉。
 const COVERS_KEY = "laterOnCovers";
 // 「一键收藏」待处理的那一批标签页：临时存在 session 里（关掉浏览器就没了，不占磁盘）。
+// 每个浏览器窗口各占一个槽（见 pendingKeyFor）：两个窗口同时开着「选项目」浮层时互不覆盖。
+// 旧版只有一个 PENDING_KEY 单键，保留它仅作兼容读取——扩展重新加载时旧浮层可能还留在网页里。
 const PENDING_KEY = "laterOnPendingBatch";
+const PENDING_PREFIX = "laterOnPendingBatch:";
+const PENDING_TTL_MS = 10 * 60 * 1000;
+// 窗口 id 拿不到时（极少数内部调用）统一落到一个兜底槽，仍然不会盖掉别人的批次。
+function pendingKeyFor(windowId) {
+  return `${PENDING_PREFIX}${Number.isInteger(windowId) ? windowId : "unknown"}`;
+}
 // 上次用过的项目：下次弹窗时默认选中它。
 const LAST_PROJECT_KEY = "laterOnLastProjectId";
 
@@ -808,7 +816,9 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 // 一次性迁移（1.14.0）现在也走 planDataMigrations：它属于「会删掉已有字段」的结构性迁移，
 // 得先探测、必要时问一句（见上面 MIGRATION_RUNNERS 里的 legacy-content）。
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+// sender.tab.windowId 是「哪个窗口的浮层点了确认」的唯一可靠来源：
+// content script 拿不到 chrome.windows，但 runtime 消息自带它所在的标签页。
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // 页面刚打开时问一句「现在有没有正在进行的添加」。
   // 侧栏是点图标才打开的，很可能收藏已经在跑了（快捷键触发），进度条得能接上，
   // 否则它要等下一次进度广播才出现，看起来像是没反应。
@@ -877,13 +887,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         // 窗口已经关掉时端口可能已断开，忽略即可。
       }
     };
-    confirmBatchSave(message.projectId || null, reply)
+    confirmBatchSave(message.projectId || null, reply, sender?.tab?.windowId)
       .then((result) => reply(result && result.ok === false ? result : { ok: true }))
       .catch((error) => reply({ ok: false, error: String(error?.message || error) }));
     return true;
   }
   if (message.type === "CANCEL_BATCH_SAVE") {
-    cancelPendingBatch()
+    cancelPendingBatch(sender?.tab?.windowId)
       .then(sendResponse)
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
@@ -1559,11 +1569,15 @@ async function askFolderThenSave({ tabs, source = "shortcut", activeTab = null, 
   const targets = tabs || [];
   const last = remembered || (await resolveProject((await chrome.storage.local.get(LAST_PROJECT_KEY))[LAST_PROJECT_KEY] || ""));
 
-  // 先把这一批标签页暂存起来，等用户在浮层里选好项目（或新建一个）再真正开始。
+  // 一批标签页只属于一个窗口：两个窗口先后触发时各写各的槽，谁也不覆盖谁。
+  // 写入前顺手清掉过期批次（长期没人点的浮层不该一直占着 session）。
+  const batchWindowId = activeTab?.windowId ?? targets[0]?.windowId ?? null;
+  await readPendingBatches();
   await chrome.storage.session.set({
-    [PENDING_KEY]: {
+    [pendingKeyFor(batchWindowId)]: {
       createdAt: Date.now(),
       source,
+      windowId: batchWindowId,
       notifyTabId: activeTab?.id ?? null,
       projectId: last.id || "",
       savedCount,
@@ -1949,17 +1963,43 @@ async function createProject(name) {
 
 // 体积较大的网页执行代码已移到 content-folder-picker.js，仅在实际使用时注入目标网页。
 
-// 取出「等待选择项目」的那一批标签页，并记录用户选的项目。
-// 返回 null 表示没有待处理的批次（重复点击 / 已过期）。
-async function claimPendingBatch(projectId) {
-  const stored = await chrome.storage.session.get(PENDING_KEY);
-  const pending = stored[PENDING_KEY];
-  if (!pending || !pending.tabs?.length) return null;
-  if (Date.now() - (pending.createdAt || 0) > 10 * 60 * 1000) {
-    await chrome.storage.session.remove(PENDING_KEY);
-    return null;
+// 读出所有还没过期的待确认批次，顺手把过期槽和旧版单键残留清掉。
+// 用 get(null) 一次拿全，是为了让「按窗口找自己那一槽」和「全场只有一个时兜底」都能成立。
+async function readPendingBatches() {
+  const all = await chrome.storage.session.get(null);
+  const live = [];
+  const stale = [];
+  for (const [key, value] of Object.entries(all || {})) {
+    if (key !== PENDING_KEY && !key.startsWith(PENDING_PREFIX)) continue;
+    const expired = Date.now() - (value?.createdAt || 0) > PENDING_TTL_MS;
+    if (!value?.tabs?.length || expired) stale.push(key);
+    else live.push({ key, batch: value });
   }
-  await chrome.storage.session.remove(PENDING_KEY);
+  // 逐个删而不是传数组：测试桩和真实 Chrome 都认单个 key。
+  for (const key of stale) await chrome.storage.session.remove(key);
+  return live;
+}
+
+// 从「这一批是谁的」角度挑出该处理的槽。
+//  · 没带窗口信息（旧调用 / 测试桩）：只有全场恰好一个批次才敢认领，绝不乱挑。
+//  · 带了窗口信息：只认自己那个槽；找不到就直接判无，不去碰别的窗口的批次。
+//  · 唯一的例外是旧版单键 PENDING_KEY（没有窗口归属），扩展重载后旧浮层还在时用来收尾。
+function pickPendingBatch(live, windowId) {
+  if (windowId == null) return live.length === 1 ? live[0] : null;
+  const exact = live.find((entry) => entry.key === pendingKeyFor(windowId));
+  if (exact) return exact;
+  const legacy = live.find((entry) => entry.key === PENDING_KEY);
+  return legacy && live.length === 1 ? legacy : null;
+}
+
+// 取出「等待选择项目」的那一批标签页，并记录用户选的项目。
+// 返回 null 表示这个窗口没有待处理的批次（重复点击 / 已过期 / 点在了别的窗口）。
+async function claimPendingBatch(projectId, windowId = null) {
+  const picked = pickPendingBatch(await readPendingBatches(), windowId);
+  if (!picked) return null;
+  const pending = picked.batch;
+  // 只删自己这一槽：其它窗口挂着的浮层不受影响，还能照常点确认。
+  await chrome.storage.session.remove(picked.key);
 
   // 用户选的项目在这段时间里可能被删掉了（浮层最长会停留 10 分钟），
   // 这里再校验一次：不存在就退回「待整理」，不给收藏留下悬空的归属。
@@ -1977,17 +2017,17 @@ async function claimPendingBatch(projectId) {
   };
 }
 
-async function cancelPendingBatch() {
-  const stored = await chrome.storage.session.get(PENDING_KEY);
-  const had = !!stored[PENDING_KEY];
-  await chrome.storage.session.remove(PENDING_KEY);
+async function cancelPendingBatch(windowId = null) {
+  const picked = pickPendingBatch(await readPendingBatches(), windowId);
+  const had = !!picked;
+  if (picked) await chrome.storage.session.remove(picked.key);
   if (had) await recordDiag({ lastStage: "已取消（没有添加任何页面）", lastResultAt: Date.now() });
   return { ok: true, cancelled: had };
 }
 
 // 确认收藏：先回执（好让选项目的小窗口立刻关闭），再在后台继续一篇一篇地收藏。
-async function confirmBatchSave(projectId, onAccepted) {
-  const claimed = await claimPendingBatch(projectId);
+async function confirmBatchSave(projectId, onAccepted, windowId = null) {
+  const claimed = await claimPendingBatch(projectId, windowId);
   if (!claimed) return { ok: false, error: (await usesEnglish()) ? "This batch has already been processed" : "这一批标签页已经处理过了" };
   if (typeof onAccepted === "function") onAccepted({ ok: true, tabCount: claimed.tabs.length });
   return runBatchSave(claimed);

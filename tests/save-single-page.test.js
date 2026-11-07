@@ -19,7 +19,9 @@ const librarySource = fs.readFileSync(path.resolve(__dirname, "..", "library.js"
 const libraryCss = fs.readFileSync(path.resolve(__dirname, "..", "library.css"), "utf8");
 const PICKER_TIMEOUT_MS = Number(/const PICKER_INJECT_TIMEOUT_MS = (\d+)/.exec(src)[1]);
 
-const PENDING_KEY = "laterOnPendingBatch";
+// 待确认批次按窗口分槽（见 background.js 的 pendingKeyFor）。
+// 本文件的标签桩 windowId 全是 1，所以这一批落在 :1 这个槽里。
+const PENDING_KEY = "laterOnPendingBatch:1";
 const LAST_PROJECT_KEY = "laterOnLastProjectId";
 const FOLDER_ID = "folder-work";
 const PAGE_URL = "https://site1.com/article";

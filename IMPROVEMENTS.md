@@ -1,7 +1,7 @@
 # 改进记录（本分支相对上游的工程记录）
 
 - 上游基线：**1.66.1**（提交 `a1a5313`，MIT，作者 yiiiii）
-- 本分支当前：**1.75.0**（fork 基线提交 `5270ebe`）
+- 本分支当前：**1.76.0**（fork 基线提交 `5270ebe`）
 - 与 `CHANGELOG.md` 的分工：CHANGELOG 是**面向使用者**的发布说明（发生什么变化、怎么用）；本文件是**面向维护者**的工程记录，写清「为什么改、根因在哪、动了哪些文件、怎么验证」。
 - 分支用法、提交规范、与上游同步的办法，见 `FORK.md`。
 
@@ -31,10 +31,97 @@
 | 1.75.0 | 2026-10-30 | 发版 | 把 2026-10-30 那两批改动合成一版发出去（添加进度提示 + 图标绿点 / 多选整组拖拽 + 关闭标签分两档 + 退出多选） | `manifest.json` `background.js` `library.*` `sidepanel.*` `dialog.*` `tab-navigation.js` `i18n.js` | `save-progress.test.js`（56 项）、`select-group-drag.test.js`（22 项） |
 | — | 2026-11-05 | 新功能 | 有新版会自己知道：每天查一次、三个界面提示、图标挂 `↑` | `update-check.js` `update-ui.js` `update-ui.css` `background.js` `library.*` `sidepanel.*` `settings.*` `i18n.js` `scripts/version-json.js` `scripts/release.js` `release.yml` | `update-check.test.js`（32 项）、`update-flow.test.js`（52 项） |
 | — | 2026-11-05 | 稳定性 | 跨版本装新代码时，先问一句再动数据（原来是不问就迁） | `migration-plan.js` `background.js` `update-ui.js` `settings.js` | `migration-plan.test.js`（18 项） |
+| — | 2026-11-08 | 修 bug | 两个窗口的「待确认批次」不再互相覆盖（原来先窗口点确认会收到后窗口的网页） | `background.js` `tests/multi-window-batch.test.js` `tests/save-all-tabs.test.js` `tests/save-single-page.test.js` `scripts/repro-multi-window-batch.js` | `multi-window-batch.test.js`（37 项） |
+| 1.76.0 | 2026-11-08 | 发版 | 把 2026-11-05 / 11-08 那批改动合成一版发出去（自动更新提示 / 迁移先确认 / 多窗口修复）；`version.json` 第一次随 Release 上传 | `manifest.json` `CHANGELOG.md` `README.md` `FORK.md` `tests/background-modules.test.js` | 单测 83/83、e2e 6/6 |
 
 ---
 
-## 未发布 — 有新版会自己知道（2026-11-05）
+## 1.76.0 — 待确认批次按窗口分槽（2026-11-08）
+
+**来源**：使用者问「不同浏览器窗口添加的标签是不是都进同一个未整理」。查代码时确认不区分窗口
+（收藏表里根本没有窗口字段，「等待整理」只是 `!item.projectId` 的派生视图），
+但顺带发现一个真缺陷：`laterOnPendingBatch` 是 `chrome.storage.session` 里的**单槽固定键**。
+
+### 根因
+
+`askFolderThenSave()` 每触发一次就无条件 `set` 覆盖同一个键，`claimPendingBatch()` 则是
+「取出谁算谁、一取就删」，既没按窗口分槽，也没有「已经有一批在等确认」的护栏。于是：
+
+1. 窗口 A 按 Alt+Shift+1 → 暂存 A 的标签页，弹出选项目浮层；
+2. 窗口 B 也按一次 → 覆盖成 B 的标签页，A 那批**彻底丢失**；
+3. 回到窗口 A 点「确认」→ 收藏到的是 B 窗口的网页。
+
+注意这里**不需要**假设 session 跨窗口共享：两次写入都发生在同一个 Service Worker（单例）里，
+写同一个 key 必然覆盖。这一点是确定的，跟 `currentWindow` 取哪个窗口的语义争议也无关。
+
+### 先复现，再修
+
+按本仓库「每轮必须反证」的规矩，先写了 `scripts/repro-multi-window-batch.js`
+（刻意放 `scripts/`、不叫 `*.test.js`，不进日常测试集）：
+
+- 实验组：窗口 A 3 篇 / 窗口 B 2 篇（篇数不同，回执 `tabCount` 也能暴露串台）
+  → 修复前 4 条期望断言报红，退出码 1。
+- 对照组 `REPRO_CONTROL=1`：不触发第二个窗口 → 同样 4 条断言始终全绿，退出码 0，
+  用来排除「桩本身收不了窗口 A 的网页」。
+- 修好后实验组自动转绿，同一个脚本可直接当回归验证用。
+
+### 改法
+
+**每窗口一个槽。** `pendingKeyFor(windowId)` → `laterOnPendingBatch:<窗口 id>`；
+`askFolderThenSave` 用 `activeTab.windowId`（拿不到时退回 `targets[0].windowId`）写自己的槽。
+不同窗口写的是**不同的键**，并发触发也不会互相覆盖。
+
+**确认时按来源找自己那一批。** 后台的 `onMessage` 本来就收到 `sender`（原来叫 `_sender` 被忽略），
+而浮层是从网页 content script 发消息的，`sender.tab.windowId` 天然可用——
+**不用改浮层代码**。content script 拿不到 `chrome.windows`，靠 runtime 消息自带的信息才稳。
+
+**兜底收得很紧**（`pickPendingBatch`）：
+- 没带窗口信息：只有全场恰好一个批次才认领，绝不乱挑；
+- 带了窗口信息：只认自己那个槽，找不到就判无，不去碰别人的批次；
+- 唯一例外是旧版单键 `PENDING_KEY`（没有窗口归属），扩展重载后旧浮层还留在网页里时用来收尾。
+
+这一条特意比初版写严了：初版是「找不到就取全场唯一批次」，
+那样「只有窗口 1 有批次、窗口 3 却发来确认」会被误认领。回归测试第 7 组钉住了这件事。
+
+**顺带做的两件小事**：`readPendingBatches()` 用 `get(null)` 一次拿全并清掉超过 10 分钟的过期槽；
+取消也只删自己那一槽。同窗口重复触发仍是「后一次替换前一次」（既有行为，按使用者要求保持）。
+
+### 动到的文件
+
+| 文件 | 改了什么 |
+|---|---|
+| `background.js` | 分槽键与 `pendingKeyFor` / `readPendingBatches` / `pickPendingBatch`；批次里记 `windowId`；`claimPendingBatch` / `cancelPendingBatch` / `confirmBatchSave` 都接 windowId；两条消息分支从 `sender.tab.windowId` 取值 |
+| `tests/multi-window-batch.test.js` | 新增，7 组 37 项：两窗口各点各的 / 同窗口重入 / 取消只删自己 / 过期清理 / 旧单键兼容 / 无窗口信息不乱挑 / 别的窗口不能认领 |
+| `tests/save-all-tabs.test.js`、`tests/save-single-page.test.js` | 两处 `PENDING_KEY` 常量从单键改成 `:1`（它们的标签桩 windowId 全是 1），其余 8 处断言不用动 |
+| `scripts/repro-multi-window-batch.js` | 保留为可复用的取证脚本；`sendFromPage` 补上 `sender.tab.windowId`，观察文案改成反映分槽 |
+| `tests/background-modules.test.js` | 体积预算 124000 → 126000（这次 +1.2KB，改完只剩 956B 余量） |
+
+### 验证与反证
+
+- 单元测试 **83/83**（61.5s，新增 1 个文件）；端到端 **6/6** spec（130s）。
+- 复现脚本：修复前实验组 4 红 / 对照组 0 红；修复后实验组 0 红 / 对照组 0 红。
+- **反证**：把 `pendingKeyFor` 临时改成恒返回旧单键 → 正式回归用例 20+ 条红、
+  复现脚本 7 条红；恢复后全绿。
+
+### 桩的坑（写测试时踩到）
+
+`showPickerOverlay` 注入完还会再验一次浮层宿主
+（`func: () => !!document.getElementById("lateron-folder-picker")?.shadowRoot`）。
+桩里少了这一条返回 `[{result:true}]`，就会误判「没打开」→ 重试注入两次、`pending:false`，
+把证据弄脏。两个测试文件与复现脚本都补了这一桩。
+
+### 考虑过但没做的
+
+- **不给第二次触发加提示**：按窗口分槽后不同窗口本来就不冲突，同窗口重入又是既有行为，
+  再加一层提示只会多一份文案与状态，超出这次要修的范围。
+- **不改浮层 / 不用 `chrome.windows.getCurrent()`**：content script 拿不到 windows API，
+  SW 里 `getCurrent()` 返回的是「最后聚焦窗口」而不是触发窗口，`sender.tab.windowId` 更准。
+- **不把批次搬进 `storage.local`**：session 本来就是「关掉浏览器就没了」的临时态，
+  搬过去反而要自己清理磁盘残留。
+
+---
+
+## 1.76.0 — 有新版会自己知道（2026-11-05）
 
 **来源**：使用者问「项目是否能加上自动更新的能力」。追问后确认了四件事：
 装给家人 / 同事也要能收到、跨版本迁移要我先确认、版本数据源两个都试、三个界面都要提醒。
@@ -125,7 +212,7 @@ Chrome **不会**自动更新它；`manifest.update_url` 对未打包扩展**不
 
 ---
 
-## 未发布 — 跨版本迁移先问一句（2026-11-05）
+## 1.76.0 — 跨版本迁移先问一句（2026-11-05）
 
 **来源**：自动更新那个追问里，使用者选了「跨版本迁移要我先确认」。
 
