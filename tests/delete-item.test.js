@@ -103,7 +103,7 @@ const clickDelete = (id) => click(cardOf(id).querySelector(".delete"));
   check("弹出了确认弹窗", !!dialog());
   check("是危险操作的红色主题", dialog()?.dataset.tone === "danger", dialog()?.dataset.tone);
   check("标题写明删的是哪一篇", dialogText(".lod-title") === "删除「标题一」？", dialogText(".lod-title"));
-  check("说明删了没法恢复", /无法恢复/.test(dialogText(".lod-message")), dialogText(".lod-message"));
+  check("说明会先进回收站", /回收站/.test(dialogText(".lod-message")), dialogText(".lod-message"));
   check("确认按钮就是「删除」", dialogText(".lod-ok") === "删除", dialogText(".lod-ok"));
 
   console.log("\n── 取消 / Esc 都不删 ──");
@@ -121,9 +121,40 @@ const clickDelete = (id) => click(cardOf(id).querySelector(".delete"));
   await tick(30);
   click(dialog().querySelector(".lod-ok"));
   await tick(320);
-  check("收藏被删掉了", !store.laterOnItems.some((it) => it.id === "i1"), store.laterOnItems.map((it) => it.id).join(","));
+  // 删除现在是软删除：条目还在存储里，带一个 deletedAt 标记，活跃列表看不到它。
+  const trashed = store.laterOnItems.find((it) => it.id === "i1");
+  check("条目进了回收站而不是被抹掉", !!trashed?.deletedAt, JSON.stringify(trashed));
   check("卡片也从列表里消失", !cardOf("i1"));
-  check("弹了「已删除网页」的提示", document.querySelector("#toast").textContent === "已删除网页", document.querySelector("#toast").textContent);
+  const toastEl = document.querySelector("#toast");
+  check("提示说已移入回收站", toastEl.textContent.startsWith("已移入回收站"), toastEl.textContent);
+  check("提示上带一个撤销按钮", !!toastEl.querySelector(".toast-action"), toastEl.innerHTML);
+
+  console.log("\n── 点「撤销」把它捞回来 ──");
+  click(document.querySelector("#toast .toast-action"));
+  await tick(320);
+  const restored = store.laterOnItems.find((it) => it.id === "i1");
+  check("撤销后标记被摘掉", !!restored && !restored.deletedAt, JSON.stringify(restored));
+  check("卡片重新出现在活跃列表", !!cardOf("i1"));
+  const trashCountEl = document.querySelector("#trashCount");
+  check("回收站计数归零并隐藏起来", trashCountEl.textContent === "0" && trashCountEl.hidden === true, trashCountEl.outerHTML);
+
+  console.log("\n── 回收站视图 ──");
+  clickDelete("i3");
+  await tick(30);
+  click(dialog().querySelector(".lod-ok"));
+  await tick(320);
+  check("入口计数变成 1", trashCountEl.textContent === "1", trashCountEl.textContent);
+  check("活跃列表里看不到 i3", !cardOf("i3"));
+  click(document.querySelector("#openTrash"));
+  await tick(80);
+  check("回收站里能看到 i3", !!cardOf("i3"));
+  check("计数文案写明这是回收站", document.querySelector("#countText").textContent === "回收站 1 篇", document.querySelector("#countText").textContent);
+  check("出现「清空回收站」按钮", document.querySelector("#emptyTrash").hidden === false);
+  check("回收站里不显示「关闭已打开」", document.querySelector("#closeProjectTabs").hidden === true);
+  click(document.querySelector('.project-nav[data-project="unfiled"]'));
+  await tick(80);
+  check("切回等待整理后又看不到 i3", !cardOf("i3"));
+  check("「清空回收站」跟着收起", document.querySelector("#emptyTrash").hidden === true);
 
   console.log("\n── 标题太长会截断 ──");
   clickDelete("i2");

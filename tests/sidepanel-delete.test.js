@@ -79,15 +79,15 @@ vm.runInContext(`${itemStoreSource}\nconst ItemStore = globalThis.LaterOnItemSto
   confirmed = true;
   await context.deleteItem('b');
   assert.strictEqual(closed, 1, '确认后只关网址对得上的那一个，不能连带关掉同标题的');
-  assert.strictEqual(context.status.textContent, 'itemDeletedAndClosed', '侧栏要在状态条里说明关了几个');
+  assert.strictEqual(context.status.textContent, 'itemTrashedAndClosed', '侧栏要在状态条里说明关了几个');
 
-  // 没有开着的标签页时，确认框不列清单，状态条也不多说一句。
+  // 没有开着的标签页时，确认框不列清单；但删除本身仍要有一句回音（现在说的是「进了回收站」）。
   context.items = [{ id: 'c', title: 'C', url: 'https://example.com/c' }];
   context.status.textContent = '';
   context.chrome.tabs.query = async () => [];
   await context.deleteItem('c');
   assert.strictEqual(lastConfig.notice, undefined, '没有标签页可关时不该出现空清单');
-  assert.strictEqual(context.status.textContent, '', '没有标签页可关时不必多一句话');
+  assert.strictEqual(context.status.textContent, 'itemMovedToTrash', '没关标签页也要说一句「移入回收站」');
   assert.strictEqual(context.items.length, 0, '收藏照常删除');
   console.log('PASS 侧栏删除必须加载确认框、加载失败/取消不删除、确认后提交并清理封面；开关打开时分两档列清单，只关网址对得上的标签页');
 })().catch(error => { console.error(error); process.exitCode = 1; });

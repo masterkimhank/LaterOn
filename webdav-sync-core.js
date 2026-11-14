@@ -43,7 +43,11 @@
       const textFields = ["title", "description", "image", "favicon", "source", "titleAtSave"];
       return textFields.every((k) => value[k] == null || typeof value[k] === "string")
         && (value.projectId == null || typeof value.projectId === "string")
-        && (value.status == null || ["unread", "reading", "done"].includes(value.status));
+        && (value.status == null || ["unread", "reading", "done"].includes(value.status))
+        // 回收站标记：缺省或非负整数。要校验，因为一个写坏的 deletedAt（比如字符串）
+        // 会让这条收藏在所有设备的列表里一起消失 —— 它既不在活跃列表里，回收站也认它，
+        // 但界面按真值判断就会当成已删。宁可在合并时判成脏数据。
+        && (value.deletedAt == null || (Number.isSafeInteger(value.deletedAt) && value.deletedAt >= 0));
     }
     if (group === "laterOnProjects") return isObject(value) && value.id === id && typeof value.name === "string";
     if (group === "laterOnCovers") return typeof value === "string" && /^data:image\/(png|jpeg|jpg|webp|gif);base64,/i.test(value);

@@ -295,3 +295,11 @@ body.booting #appBody { display:none; }
   .item:hover .meta time, .item:hover .meta .dot { opacity:1; }
   .delete { right:9px; }
 }
+
+/* 回收站里的条目只剩「恢复 / 彻底删除」：标已读和编辑那颗按钮在那儿会让人
+   误改一个已经删掉的条目。用类而不是 [hidden]，因为那两颗按钮有作者样式，
+   属性会被压过（和 library.css 的 .card.is-trashed 同一条规矩）。 */
+.item.is-trashed .read-toggle,
+.item.is-trashed .edit { display:none; }
+/* 回收站空着时不挂计数：project-filter 里的数字是 strong，补一条 [hidden] 兜底。 */
+.project-filter strong[hidden] { display:none; }

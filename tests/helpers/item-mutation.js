@@ -9,7 +9,11 @@ module.exports = function install(window) {
   if (!window.chrome?.runtime || window.__itemMutationMock) return;
   window.__itemMutationMock = true;
   const context = vm.createContext({ chrome: window.chrome, Date, Set,
-    STORAGE_KEY: 'laterOnItems', COVERS_KEY: 'laterOnCovers', ORDER_KEY: 'laterOnOrder', CURRENT_ITEM_KEY: 'laterOnCurrentItem' });
+    STORAGE_KEY: 'laterOnItems', COVERS_KEY: 'laterOnCovers', ORDER_KEY: 'laterOnOrder',
+    CURRENT_ITEM_KEY: 'laterOnCurrentItem',
+    // 回收站的 restore 要查项目还在不在：这个上下文只切了 mutateItems，
+    // 主文件里的常量不会跟着过来，漏一个就是 ReferenceError（页面只会弹「操作失败」）。
+    PROJECTS_KEY: 'laterOnProjects' });
   // mutateItems 把摘要 / 封面写进详情表，所以桩里也要装上真正的 item-store.js，
   // 否则 ItemStore 在这个独立上下文里不存在，一改摘要就抛错、页面只弹「操作失败」。
   vm.runInContext(`${read('item-store.js')}

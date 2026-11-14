@@ -196,8 +196,8 @@ function boot({ store, pendingGet = false, cache = null, bootStartOffsetMs = 0, 
   check("老封面在卡片上照常显示", envC.coverSrc("old-1") === DATA_URL, envC.coverSrc("old-1").slice(0, 40));
   check("搬完家没有 jsdom 报错", envC.errors.length === 0, envC.errors.slice(0, 2).join(" | "));
 
-  // ═══ ④ 删除收藏时，自己上传的封面跟着删 ═══
-  console.log("\n── ④ 删除收藏时封面本体一并清除 ──");
+  // ═══ ④ 删除收藏：进回收站，封面先留着（彻底删除时才清） ═══
+  console.log("\n── ④ 删除收藏进回收站，封面留到彻底删除 ──");
   const coverStore = {
     laterOnItems: [makeItem({ id: "has-cover", image: "local://has-cover" })],
     laterOnProjects: [],
@@ -222,8 +222,11 @@ function boot({ store, pendingGet = false, cache = null, bootStartOffsetMs = 0, 
   envD.document.querySelector(".lod-root:not([hidden]) .lod-ok")
     .dispatchEvent(new envD.window.MouseEvent("click", { bubbles: true, cancelable: true }));
   await tick(320);
-  check("确认后收藏被删掉", !envD.itemOf("has-cover"));
-  check("封面本体也删掉了", !("has-cover" in (coverStore.laterOnCovers || {})), JSON.stringify(coverStore.laterOnCovers));
+  // 软删除：条目与封面都还在，只是打了 deletedAt；真删封面得等彻底删除。
+  const trashedItem = (coverStore.laterOnItems || []).find((it) => it.id === "has-cover");
+  check("确认后条目进了回收站", !!trashedItem?.deletedAt, JSON.stringify(trashedItem));
+  check("列表里看不到它了", !envD.itemOf("has-cover"));
+  check("封面还留着（撤销时要还原）", "has-cover" in (coverStore.laterOnCovers || {}), JSON.stringify(coverStore.laterOnCovers));
 
   // ═══ ⑤ 收藏很多时分批画：先出第一屏，剩下不阻塞 ═══
   console.log("\n── ⑤ 收藏很多时分批画：第一批立刻可见，其余空闲时段续画 ──");

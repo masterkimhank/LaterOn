@@ -135,10 +135,15 @@ function check(label, ok, detail = '') {
     const loaded = await ctx.LaterOnItemStore.load(local);
     check('读回来时摘要与封面都齐', loaded.items[0].description === '我自己改的摘要' && loaded.items[0].image === 'https://img/cover.jpg');
 
-    // 删除：索引与详情表一起清。
+    // 软删除：条目留在索引里，只打时间戳，详情表不动（撤销才捞得回来）。
     await ctx.mutateItems({ operation: 'delete', ids: [id] });
-    check('删除后索引为空', store.laterOnItems.length === 0);
-    check('删除后详情表里那条也没了', !store.laterOnItemDetails[id]);
+    check('软删除后索引里还有它', store.laterOnItems.length === 1 && store.laterOnItems[0].deletedAt > 0);
+    check('软删除不动详情表', store.laterOnItemDetails[id].description === '我自己改的摘要');
+
+    // 彻底删除：索引与详情表一起清。
+    await ctx.mutateItems({ operation: 'purge', ids: [id] });
+    check('彻底删除后索引为空', store.laterOnItems.length === 0);
+    check('彻底删除后详情表里那条也没了', !store.laterOnItemDetails[id]);
   }
 
   // ── ③ 老数据迁移 ────────────────────────────────────────────

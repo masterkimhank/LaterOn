@@ -120,6 +120,9 @@
             <div id="projectList" class="project-list"></div>
           </div>
           <div class="sidebar-footer">
+            <!-- 回收站：删除的网页先落在这里，直到手动清空。和「归档」并列，
+                 因为它们是同一类「东西还在、只是不在主列表里」的去处。 -->
+            <button id="openTrash" class="sidebar-setting" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m3 0-1 13H7L6 7"/></svg><span data-i18n="trash">回收站</span><strong class="nav-count" id="trashCount">0</strong></button>
             <button id="openArchive" class="sidebar-setting" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18v4H3zM5 8v12h14V8M9 12h6"/></svg><span data-i18n="archive">归档</span></button>
             <button id="openSettings" class="sidebar-setting" type="button" title="设置" aria-label="设置">
               <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -140,6 +143,8 @@
             <!-- 关掉「这个项目里已打开的标签页」，但一条收藏都不删。
                  只在单个项目（含等待整理）里出现：全部项目/归档不是单个项目，范围说不清。 -->
             <button id="closeProjectTabs" type="button" class="close-tabs" data-i18n="closeProjectTabs" data-i18n-title="closeProjectTabsHint" title="关闭这个项目里已打开的标签页（收藏不会删除）">关闭已打开</button>
+            <!-- 只在回收站里出现：一次性把那里面的东西全真删掉。 -->
+            <button id="emptyTrash" type="button" class="close-tabs" data-i18n="emptyTrash" data-i18n-title="emptyTrashHint" title="把回收站里的网页全部彻底删除" hidden>清空回收站</button>
             <!-- 全部项目固定是图板视图，待整理 / 单个项目是卡片视图，不再需要手动切换 -->
             <select id="sortSelect" data-i18n-aria-label="sortAria" aria-label="排序方式">
               <option value="newest" data-i18n="sortNewest">最近添加</option>
@@ -226,6 +231,9 @@
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg>
         </button>
         <button id="bulkDelete" type="button" class="danger" data-i18n="delete">删除</button>
+        <!-- 回收站里这两颗替换掉上面的常规操作：那里能做的只有「捞回来」和「真删掉」。 -->
+        <button id="bulkRestore" type="button" data-i18n="restore" hidden>恢复</button>
+        <button id="bulkPurge" type="button" class="danger" data-i18n="purge" hidden>彻底删除</button>
         <button id="bulkDone" type="button" class="primary" data-i18n="done">完成</button>
       </div>
     </div>

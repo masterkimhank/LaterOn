@@ -276,10 +276,20 @@ const ITEMS = ["a", "b", "c"].map((key, index) => ({
   pointerDown(deleteDialog.querySelector('.lod-ok'));
   click(deleteDialog.querySelector('.lod-ok'));
   await tick(300);
-  check("确认后只删除选中的两篇，未选网页保留", store.laterOnItems.length === 2 && store.laterOnItems[0].id === 'item-c' && store.laterOnItems[1].id === 'recent', JSON.stringify(store.laterOnItems.map(item => item.id)));
-  check("清理被删网页封面并保留未选封面", !store.laterOnCovers["item-a"] && !store.laterOnCovers["item-b"] && store.laterOnCovers["item-c"] === "cover-c");
+  // 现在是软删除：索引里还留着（撤销要能捞回来），只打 deletedAt 标记；
+  // 未选的网页和「存储广播还没同步到界面」的那篇都不许被碰。
+  const trashedIds = store.laterOnItems.filter((item) => item.deletedAt).map((item) => item.id).join(',');
+  const keptIds = store.laterOnItems.filter((item) => !item.deletedAt).map((item) => item.id).join(',');
+  check("确认后只把选中的两篇移入回收站，未选网页原样保留",
+    store.laterOnItems.length === 4 && trashedIds === 'item-a,item-b' && keptIds === 'item-c,recent',
+    `进回收站 ${trashedIds} / 留着 ${keptIds}`);
+  check("移入回收站不动封面（撤销时要原样还原）",
+    store.laterOnCovers["item-a"] === "cover-a" && store.laterOnCovers["item-b"] === "cover-b" && store.laterOnCovers["item-c"] === "cover-c",
+    JSON.stringify(store.laterOnCovers));
   check("删除后界面移除对应卡片并退出多选", !cardOf('item-a') && !cardOf('item-b') && !grid.classList.contains('selecting'));
-  check("删除提示数量正确", /已删除 2 篇/.test(document.querySelector('#toast').textContent), document.querySelector('#toast').textContent);
+  check("删除提示数量正确且带撤销入口",
+    /已把 2 篇移入回收站/.test(document.querySelector('#toast').textContent) && !!document.querySelector('#toast .toast-action'),
+    document.querySelector('#toast').textContent);
 
   console.log(failures === 0 ? "\n全部检查通过 🎉" : `\n有 ${failures} 项失败`);
   if (failures) process.exitCode = 1;

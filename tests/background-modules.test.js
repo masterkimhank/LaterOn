@@ -30,8 +30,10 @@ const backgroundBytes = Buffer.byteLength(background.replace(/\r\n/g, "\n"));
 // 「数据格式迁移先探测再问」两块接线加了约 10.7KB。
 // 预算 124000 → 126000：待确认批次按窗口分槽加了约 1.2KB（改完只剩 956B 余量），
 // 顺手给后续改动留出空间。
+// 预算 126000 → 129000：回收站（软删除 / 恢复 / 彻底删除三分支 + 各处 deletedAt 过滤、
+// 重新收藏时把条目从回收站捞回来）加了约 1.4KB。留 2.4KB 余量。
 // 仍然守住的底线是：网页内执行的大函数一律不许搬回来（下面三条断言）。
-assert.ok(backgroundBytes < 126000, `background.js 重新膨胀到 ${backgroundBytes} bytes`);
+assert.ok(backgroundBytes < 129000, `background.js 重新膨胀到 ${backgroundBytes} bytes`);
 
 assert.ok(metadata.includes("function extractPageMetadataForShortcut"));
 assert.ok(translation.includes("function togglePageTranslation"));

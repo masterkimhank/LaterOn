@@ -33,6 +33,76 @@
 | — | 2026-11-05 | 稳定性 | 跨版本装新代码时，先问一句再动数据（原来是不问就迁） | `migration-plan.js` `background.js` `update-ui.js` `settings.js` | `migration-plan.test.js`（18 项） |
 | — | 2026-11-08 | 修 bug | 两个窗口的「待确认批次」不再互相覆盖（原来先窗口点确认会收到后窗口的网页） | `background.js` `tests/multi-window-batch.test.js` `tests/save-all-tabs.test.js` `tests/save-single-page.test.js` `scripts/repro-multi-window-batch.js` | `multi-window-batch.test.js`（37 项） |
 | 1.76.0 | 2026-11-08 | 发版 | 把 2026-11-05 / 11-08 那批改动合成一版发出去（自动更新提示 / 迁移先确认 / 多窗口修复）；`version.json` 第一次随 Release 上传 | `manifest.json` `CHANGELOG.md` `README.md` `FORK.md` `tests/background-modules.test.js` | 单测 83/83、e2e 6/6 |
+| — | 2026-11-14 | 新功能 | 回收站：删除改成软删除，可撤销 / 恢复 / 彻底删除 | `background.js` `webdav-sync-core.js` `library.*` `sidepanel.*` `i18n.js` `item-store.js`（未动，复用） | `trash.test.js`（27 项）、`library-trash-ui.test.js`（34 项） |
+
+---
+
+## 未发布 — 回收站（软删除 + 撤销）（2026-11-14）
+
+**为什么**：删除是唯一一个「点错就没有第二次机会」的动作。确认框上写着「删除后无法恢复」，
+而它也确实立刻把条目、封面、摘要一起抹掉了——误删一篇正在读的长文，代价是重新去找。
+
+**做法**：不给用户加一层「确认两次」，而是把删除变成**可逆**的。
+
+- 数据层：条目留在索引数组里，只打一个 `deletedAt` 时间戳。封面、自定义顺序、详情表原样不动
+  ——撤销要能「位置、封面、所属项目都不变」地回来，这些就一个都不能提前清掉。
+- 彻底删除（`purge`）才真抹数据，并且保留原来的清理动作（封面 / 顺序 / 详情表 / `CURRENT_ITEM_KEY`）。
+- 恢复（`restore`）摘掉 `deletedAt`；如果它原本归属的项目已经不在了，顺手把 `projectId` 清空，
+  别让条目挂在空气上。
+- 两个界面（收藏库 / 侧栏）都加了回收站视图、批量恢复、批量彻底删除、清空；收藏库的删除提示条
+  带「撤销」按钮，六秒内可点。
+
+**为什么不改同步层**：`webdav-sync-core.js` 的 `validValue()` 对 `laterOnItems` 只校验它认识的字段，
+未知字段直接放过，所以带 `deletedAt` 的条目照样能上传下载。只需要补一条类型校验——否则一个坏值
+（字符串、负数）会让条目在所有设备上「消失」，而且看不出原因。
+
+**踩到的坑**
+
+1. **测试桩少一个常量，症状是「操作失败」**：`tests/helpers/item-mutation.js` 的 vm 上下文只切了
+   `mutateItems`，`PROJECTS_KEY` 没跟着进来。`restore` 分支一进去就 `ReferenceError`，被页面的
+   `try/catch` 吃掉后只弹一句「操作失败」——看起来像功能没写对，其实是桩缺料。
+   凡是从 `background.js` 切片段出来跑，片段里用到的模块级常量都要在桩上下文里补一遍。
+2. **`delete` 的语义变了，一批老断言跟着变**：`item-mutation.test.js` / `delete-item.test.js` /
+   `close-tabs-on-delete.test.js` / `panel-fast-open.test.js` / `select-mode.test.js` / `item-store.test.js`
+   里「删完索引为空 / 封面被清 / 条目不在 DOM」这类断言，现在要么改成 `purge`、要么改成「还在，但带
+   `deletedAt`，列表里看不到」。**这不是把测试改绿，是把断言改到新语义上**：同一个文件里都补了
+   「没删的那条反而没被动过」这种反向断言。
+3. **空态文案有两处作者，谁后跑谁赢**：`syncViewUI()` 先写「回收站是空的」，紧接着
+   `renderCardsView()` 又按「有数据但筛出 0 条」写成「没有找到匹配的网页」，后者覆盖前者。
+   真机截图才看出来（jsdom 里没加载 CSS，两处写同一个节点不报错）。现在文案只在
+   `renderCardsView()` 一处定，`syncViewUI()` 里的那段删掉并写明原因。
+4. **「清空回收站」只在「有东西可清」时出现**：原来只看「在不在回收站视图」，于是清空后按钮还挂着，
+   点下去弹一个「确定清空 0 篇吗」。改成同时看有没有 `deletedAt` 的条目。
+5. **作者写了 `display` 就必须自己补 `[hidden]`/同级规则**：`.item.is-trashed .read-toggle` 这条
+   隐藏规则直接写 `display:none`，不能给按钮加 `hidden` 属性——属性会被作者样式压过（这条规矩
+   在 `library.css` / `sidepanel.css` 上已经踩过两次）。
+6. **`background.js` 体积预算** 126,000 → 129,000（软删除三分支 + 各处过滤 +1.4KB）。底线没变：
+   网页内执行的大函数一条都不许搬回 service worker。
+
+**顺带修掉的一个测试基建问题**：`tests/panel-locate-current.test.js` 是**本来就在偶发报红**的
+（干净 HEAD 上 8 次跑红 2 次，先 `git stash` 验过不是本轮引入）。根因是它用固定 `tick(1500)` 等
+「滚动 + 420ms 复查链」，而机器一忙链条就顶到 1500ms 边。改成等条件成立（`waitUntil`，上限 4s），
+断言一条没减；改完连跑 8 次全绿。
+
+**文件**：`background.js`（`mutateItems` 三分支、`omniboxMatches` / `showPickerOverlay` /
+`purgeExpiredItemsNow` / `saveItem` 的过滤与「重新收藏 = 捞回来」）、`webdav-sync-core.js`（`deletedAt` 校验）、
+`library.html` `library.js` `library.css`、`sidepanel.js` `sidepanel.css`、`i18n.js`（中英各 19 个键）、
+`tests/trash.test.js`（新增）、`tests/library-trash-ui.test.js`（新增）、`tests/helpers/item-mutation.js`、
+`tests/item-mutation.test.js` `tests/item-store.test.js` `tests/delete-item.test.js`
+`tests/close-tabs-on-delete.test.js` `tests/panel-fast-open.test.js` `tests/select-mode.test.js`
+`tests/sidepanel-delete.test.js` `tests/background-modules.test.js` `tests/panel-locate-current.test.js`。
+
+**验证**
+
+- `node scripts/test-all.js` → **85/85 文件通过**，69 秒（新增两份回收站测试）。
+- `node scripts/test-e2e.js` → **6/6 spec 通过**，151 秒。
+- 反证一：把 `delete` 分支改成和 `purge` 一样真删 → `trash.test.js` 4 条红、退出码 1（并顺手把该文件
+  里 `byId(...)` 的直接解引用改成空安全，否则它会崩在 `TypeError` 上而不是干净地报红）。
+- 反证二：把「清空按钮只在有东西时出现」和「回收站空态」两处退回旧写法 → `library-trash-ui.test.js`
+  精确红在那 3 条上（其中一条把「没有找到匹配的网页」这个错误文案抓了出来）。
+- 真 Chromium 手工核对（截图 + 量尺寸）：侧栏入口 215×44 不溢出、撤销按钮 48×26 落在提示条内且不超出
+  窗口、回收站视图里已读/项目/编辑三颗控件都不显示、清空后文案与按钮状态正确、侧栏右键菜单是
+  「在新标签页打开 / 恢复 / 彻底删除」且恢复后 `deletedAt` 确实被摘掉。
 
 ---
 

@@ -42,8 +42,15 @@ function queueItemWrite(task) {
   return pending;
 }
 // 网页修改与删除共用添加/自动清理的队列，始终从最新存储按 id 修改。
+//
+// 删除是「软删除」：条目留在索引里，只打一个 deletedAt 标记，回收站据此列出来。
+// 为什么不再直接抹掉——同步层是按「记录还在不在」判断删除的，真删之后另一端只能
+// 看到一条墓碑，本地也同样没得恢复；而误删一条收藏是没法从别处找回来的。
+// 真正抹数据的是 purge（彻底删除 / 清空回收站），那时才清封面、顺序与详情。
+// 软删除期间封面与顺序都留着，恢复后能原位还原；同步时条目带着 deletedAt 一起走，
+// 其他设备也把它当已删（同样能从各自的回收站里恢复）。
 async function mutateItems({ operation, ids, patch = {} }) {
-  if (!["delete", "update"].includes(operation) || !Array.isArray(ids) || ids.some(id => typeof id !== "string")) {
+  if (!["delete", "restore", "purge", "update"].includes(operation) || !Array.isArray(ids) || ids.some(id => typeof id !== "string")) {
     throw new Error("Invalid item mutation");
   }
   return queueItemWrite(async () => {
@@ -61,25 +68,40 @@ async function mutateItems({ operation, ids, patch = {} }) {
     // 老数据的索引条目里还带着摘要 / 封面。这一条只要被改动，就顺手把这两个字段从索引里
     // 剥掉（值在下面统一搬进详情表），别让「改过的那条」继续带着大字段躺在索引里。
     let strippedLegacy = false;
-    const nextItems = operation === "delete"
+    const trashedAt = Date.now();
+    const nextItems = operation === "purge"
       ? original.filter(item => { if (!targets.has(item.id)) return true; affected++; return false; })
-      : original.map(item => {
-        if (!targets.has(item.id)) return item;
-        affected++;
-        const next = { ...patch };
-        delete next.id;
-        // 详情字段走单独那个键，别落到索引里。
-        for (const field of ItemStore.DETAIL_FIELDS) delete next[field];
-        if (next.status) {
-          next.read = next.status === "done";
-          next.doneAt = next.status === "done"
-            ? (item.status === "done" && Number(item.doneAt) ? item.doneAt : Date.now())
-            : null;
-        }
-        const split = ItemStore.splitItem({ ...item, ...next });
-        if (split.detail) strippedLegacy = true;
-        return split.index;
-      });
+      : operation === "delete" || operation === "restore"
+        ? original.map(item => {
+          if (!targets.has(item.id)) return item;
+          // 幂等：重复删除不刷新时间，重复恢复不动已恢复的条目。
+          // 否则「再点一次删除」会把回收站里的先后顺序全打乱。
+          if (operation === "delete" ? item.deletedAt : !item.deletedAt) return item;
+          affected++;
+          const next = { ...item };
+          if (operation === "delete") next.deletedAt = trashedAt;
+          else delete next.deletedAt;
+          return next;
+        })
+        : original.map(item => {
+          if (!targets.has(item.id)) return item;
+          affected++;
+          const next = { ...patch };
+          delete next.id;
+          // 回收站标记不属于 patch 能改的范围：改条目的其它字段时不能顺手把它捞出来。
+          delete next.deletedAt;
+          // 详情字段走单独那个键，别落到索引里。
+          for (const field of ItemStore.DETAIL_FIELDS) delete next[field];
+          if (next.status) {
+            next.read = next.status === "done";
+            next.doneAt = next.status === "done"
+              ? (item.status === "done" && Number(item.doneAt) ? item.doneAt : Date.now())
+              : null;
+          }
+          const split = ItemStore.splitItem({ ...item, ...next });
+          if (split.detail) strippedLegacy = true;
+          return split.index;
+        });
     const nextCovers = { ...(stored[COVERS_KEY] || {}) };
     const write = { [STORAGE_KEY]: nextItems };
     // 回给调用方的「这次真改到的详情」。索引里已经不带你刚改的摘要 / 封面了，
@@ -98,7 +120,9 @@ async function mutateItems({ operation, ids, patch = {} }) {
       }
       write[ItemStore.DETAILS_KEY] = nextDetails;
     }
-    if (operation === "delete") {
+    if (operation === "purge") {
+      // 只有彻底删除才动封面、顺序与详情：软删除期间它们都得留着，
+      // 否则撤销 / 恢复回来是一张没有封面、排到末尾的空卡片。
       for (const id of targets) delete nextCovers[id];
       write[COVERS_KEY] = nextCovers;
       write[ORDER_KEY] = Object.fromEntries(Object.entries(stored[ORDER_KEY] || {}).map(
@@ -115,6 +139,18 @@ async function mutateItems({ operation, ids, patch = {} }) {
           else nextDetails[id] = detail;
         }
         if (changed) write[ItemStore.DETAILS_KEY] = nextDetails;
+      }
+    } else if (operation === "delete") {
+      // 软删除：进回收站就不再是「继续阅读」的目标，其余一概不动。
+      if (targets.has(stored[CURRENT_ITEM_KEY])) write[CURRENT_ITEM_KEY] = null;
+    } else if (operation === "restore" && affected) {
+      // 回收期间它所属的项目可能已经被删了。恢复回来不能挂在一个不存在的项目上，
+      // 否则这篇在任何视图里都找不到（只能靠搜索翻出来），和「恢复」的本意相反。
+      const known = new Set(((await chrome.storage.local.get(PROJECTS_KEY))[PROJECTS_KEY] || []).map(project => project.id));
+      for (let index = 0; index < nextItems.length; index += 1) {
+        const item = nextItems[index];
+        if (!targets.has(item.id) || !item.projectId || known.has(item.projectId)) continue;
+        nextItems[index] = { ...item, projectId: null };
       }
     }
     // 一次提交网页、详情、封面、顺序及当前阅读标记；失败时不返回成功结果。
@@ -499,7 +535,7 @@ function omniboxMatches(items, projects, text) {
   const words = String(text || "").trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
   const projectNames = new Map((projects || []).map((project) => [project.id, project.name]));
   return (items || [])
-    .filter((item) => isWebUrl(item.url) && !(projects || []).some((project) => project.id === item.projectId && project.archived))
+    .filter((item) => !item.deletedAt && isWebUrl(item.url) && !(projects || []).some((project) => project.id === item.projectId && project.archived))
     .map((item) => {
       const title = String(item.title || item.url || "");
       const project = projectNames.get(item.projectId) || "";
@@ -704,8 +740,10 @@ async function purgeExpiredItemsNow() {
     const days = normalizeCleanDays((stored[SETTINGS_KEY] || {}).autoCleanDays);
     const cutoff = Date.now() - days * DAY_MS;
     // 没有 doneAt 的（本版本之前就标成已读的老收藏）一律不动，避免升级后误删一片。
+    // 已经在回收站里的也不动：回收站的保留期是「直到手动清空」，不能被自动清除规则
+    // 顺手带走 —— 否则设定 7 天自动清理的人，回收站里的东西一周后照样蒸发。
     const expiredIds = new Set(
-      items.filter((item) => isDoneItem(item) && Number(item.doneAt) > 0 && Number(item.doneAt) < cutoff)
+      items.filter((item) => !item.deletedAt && isDoneItem(item) && Number(item.doneAt) > 0 && Number(item.doneAt) < cutoff)
         .map((item) => item.id)
     );
     if (!expiredIds.size) return 0;
@@ -1038,16 +1076,19 @@ async function quickSave(tab, source = "shortcut") {
       lastCoverTitle: String(baseItem.title || "").slice(0, 60),
       lastCoverAt: Date.now()
     });
-    const message = saved.refreshed
-      ? (en ? `Details updated: ${pillTitle(baseItem.title)}` : `已更新信息：${pillTitle(baseItem.title)}`)
-      : saved.duplicated
-        ? (en ? "This page is already added" : "这个网页已经添加过了")
-        : (en ? `Added: ${pillTitle(baseItem.title)}` : `已添加：${pillTitle(baseItem.title)}`);
+    const message = saved.restored
+      ? (en ? `Restored from trash: ${pillTitle(baseItem.title)}` : `已从回收站恢复：${pillTitle(baseItem.title)}`)
+      : saved.refreshed
+        ? (en ? `Details updated: ${pillTitle(baseItem.title)}` : `已更新信息：${pillTitle(baseItem.title)}`)
+        : saved.duplicated
+          ? (en ? "This page is already added" : "这个网页已经添加过了")
+          : (en ? `Added: ${pillTitle(baseItem.title)}` : `已添加：${pillTitle(baseItem.title)}`);
     await showPagePills(tab.id, [message]).catch(() => {});
     outcome = {
       ok: true,
       title: pillTitle(baseItem.title),
-      added: saved.duplicated ? 0 : 1,
+      // 从回收站捞回来的算「添加成功」：用户点了一次收藏，列表里确实多了一篇。
+      added: saved.duplicated && !saved.restored ? 0 : 1,
       duplicated: !!saved.duplicated,
       refreshed: !!saved.refreshed
     };
@@ -1443,16 +1484,20 @@ async function saveItem(item, options = {}) {
     // 但会把「缺的 / 明显过期的」信息补上（YouTube 一律刷新，见 mergeDuplicateMetadata）。
     if (index >= 0) {
       const existing = items[index];
+      // 命中的是回收站里的那一条：用户又收藏了一次，说明他还要这篇。
+      // 直接把它捞回来，而不是回一句「这个网页已经添加过了」却哪都看不见。
+      const restored = !!existing.deletedAt;
+      if (restored) delete existing.deletedAt;
       const beforeTitle = existing.title;
       const refreshed = mergeDuplicateMetadata(existing, item);
       // 标题被这次抓到的内容换掉了：把原来那条留作快照，
       // 之后界面上就能同时给出「收藏时看到的」和「网站现在给的」两版标题。
       const remembered = existing.title !== beforeTitle ? rememberTitleBeforeReplace(existing, beforeTitle) : false;
       const backfilled = backfillTitleAtSave(existing, item);
-      if (refreshed || remembered || backfilled) {
+      if (restored || refreshed || remembered || backfilled) {
         await chrome.storage.local.set(ItemStore.writePatch(items, loaded.details));
       }
-      return { ok: true, item: existing, updated: true, duplicated: true, refreshed };
+      return { ok: true, item: existing, updated: true, duplicated: true, refreshed, restored };
     }
 
     const normalized = {
@@ -1843,10 +1888,11 @@ async function showPickerOverlay(tab, payload) {
     const settings = stored[SETTINGS_KEY] || {};
     const covers = stored[COVERS_KEY] || {};
 
-    // 每个项目下已有多少篇：给用户一个参考。
+    // 每个项目下已有多少篇：给用户一个参考。回收站里的不算。
     const counts = new Map();
     let unfiled = 0;
     for (const item of items) {
+      if (item.deletedAt) continue;
       if (item.projectId) counts.set(item.projectId, (counts.get(item.projectId) || 0) + 1);
       else unfiled += 1;
     }
@@ -1856,7 +1902,7 @@ async function showPickerOverlay(tab, payload) {
     const coverFor = (projectId) => {
       const project = projects.find((p) => p.id === projectId);
       if (project?.cover) return project.cover;
-      const inProject = items.filter((it) => (it.projectId || "") === projectId);
+      const inProject = items.filter((it) => !it.deletedAt && (it.projectId || "") === projectId);
       for (const it of inProject) {
         // 条目上存的是 local://<id> 指针，真正的图在 covers 里；老数据可能还是 data: / 远程 URL。
         if (it.id && covers[it.id]) return covers[it.id];

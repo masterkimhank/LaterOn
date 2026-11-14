@@ -41,9 +41,11 @@ const page = name => ({ url: `https://fixture.test/${name}`, title: name, image:
   store.laterOnCurrentItem = 'delete';
   let result = await ctx.mutateItems({ operation: 'delete', ids: ['delete', 'missing'] });
   assert.strictEqual(result.affected, 1);
-  assert.deepStrictEqual(store.laterOnItems.map(it => it.id), ['keep', 'recent']);
-  assert.deepStrictEqual(store.laterOnCovers, { keep: 'data:keep' });
-  assert.deepStrictEqual(store.laterOnOrder, { all: ['keep'], project: ['recent'] });
+  // 软删除：条目还在，只是带上了 deletedAt；封面、顺序都留着，撤销时才能原位还原。
+  assert.deepStrictEqual(store.laterOnItems.map(it => it.id), ['delete', 'keep', 'recent']);
+  assert.ok(store.laterOnItems.find(it => it.id === 'delete').deletedAt > 0, '删除应写入回收站标记');
+  assert.deepStrictEqual(store.laterOnCovers, { delete: 'data:delete', keep: 'data:keep' });
+  assert.deepStrictEqual(store.laterOnOrder, { all: ['delete', 'keep'], project: ['delete', 'recent'] });
   assert.strictEqual(store.laterOnCurrentItem, null);
 
   store.laterOnItems = [page('keep'), page('delete')];
@@ -52,7 +54,8 @@ const page = name => ({ url: `https://fixture.test/${name}`, title: name, image:
     ctx.mutateItems({ operation: 'delete', ids: ['delete'] }),
     ctx.mutateItems({ operation: 'update', ids: ['delete'], patch: { status: 'reading' } })
   ]);
-  assert.deepStrictEqual(store.laterOnItems.map(it => it.title).sort(), ['concurrent', 'keep'], '并发添加保留，迟到的状态更新不能复活已删除网页');
+  assert.deepStrictEqual(store.laterOnItems.map(it => it.title).sort(), ['concurrent', 'delete', 'keep'], '并发添加保留，迟到的状态更新不能复活已删除网页');
+  assert.ok(store.laterOnItems.find(it => it.id === 'delete').deletedAt > 0, '迟到的状态更新不该把回收站标记抹掉');
 
   store.laterOnCovers = { keep: 'data:keep' };
   const before = clone(store);
@@ -61,7 +64,8 @@ const page = name => ({ url: `https://fixture.test/${name}`, title: name, image:
   assert.deepStrictEqual(store, before, '提交失败时网页、封面和排序均不改变');
   result = await ctx.mutateItems({ operation: 'delete', ids: ['keep'] });
   assert.strictEqual(result.affected, 1, '失败后可以重试，队列不会堵塞');
-  assert.strictEqual(store.laterOnCovers.keep, undefined);
+  // 软删除不动封面：撤销 / 恢复回来还得用它。
+  assert.strictEqual(store.laterOnCovers.keep, 'data:keep');
 
   store.laterOnItems = [{ ...page('done'), status: 'done', doneAt: 123 }];
   await ctx.mutateItems({ operation: 'update', ids: ['done'], patch: { status: 'done' } });

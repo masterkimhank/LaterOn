@@ -742,3 +742,25 @@ footer { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-it
 .bulk-project svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; opacity: .72; }
 
 .sidebar-setting.active { background: var(--glass-strong); color: var(--ink); }
+
+/* ── 回收站 ──────────────────────────────────────────────
+   卡片进了回收站就只剩「恢复 / 彻底删除」两件事：阅读状态、项目归属和编辑按钮
+   在那儿都会误导人（改了也还是个已删条目），直接收起来。
+   用类而不是 [hidden]：这两个控件没写 display，但将来加了就压不住，类写法更稳。 */
+.card.is-trashed .read-toggle,
+.card.is-trashed .project-select,
+.card.is-trashed .edit { display: none; }
+
+/* 侧栏底部入口里的计数：.sidebar-setting 是 flex 但没 justify-content，
+   计数得自己推到最右边；它本身是 grid，不补 [hidden] 规则就藏不起来。 */
+.sidebar-setting .nav-count { margin-left: auto; }
+.sidebar-setting .nav-count[hidden] { display: none; }
+
+/* 带「撤销」的提示条：默认是 pointer-events:none 的一行字，有按钮时必须能点。 */
+.toast.has-action { display: flex; align-items: center; gap: 10px; pointer-events: auto; }
+.toast-action {
+  flex: none; border: 0; border-radius: 99px; padding: 5px 12px;
+  background: rgba(255,255,255,.16); color: inherit;
+  font: inherit; font-weight: 700; cursor: pointer;
+}
+.toast-action:hover { background: rgba(255,255,255,.26); }

@@ -1125,7 +1125,7 @@ async function commitSidepanelCardOrder(dropIndex) {
     .map((article) => article.dataset.id)
     .filter((id) => id && id !== draggedId);
   const anchorId = visibleIds[dropIndex] ?? null;
-  const scoped = items.filter((item) => activeProject === "unfiled" ? !item.projectId : item.projectId === activeProject);
+  const scoped = items.filter((item) => !item.deletedAt && (activeProject === "unfiled" ? !item.projectId : item.projectId === activeProject));
   const full = sidepanelScopeOrder(scoped).filter((id) => id !== draggedId);
   const anchorIndex = anchorId ? full.indexOf(anchorId) : -1;
   const nextOrder = anchorIndex === -1
@@ -1172,11 +1172,20 @@ function showItemContextMenu(item, x, y) {
   const menu = document.createElement("div");
   menu.className = "folder-menu";
   menu.setAttribute("role", "menu");
-  menu.append(
-    sidepanelMenuItem(tr("openInNewTab"), "open", () => openItemInNewTab(item)),
-    sidepanelMenuItem(tr("itemEdit"), "pencil", () => editItem(item)),
-    sidepanelMenuItem(tr("delete"), "trash", () => deleteItem(item.id), true)
-  );
+  if (item.deletedAt) {
+    // 回收站里的条目只有两件事可做：捞回来，或者真删掉。
+    menu.append(
+      sidepanelMenuItem(tr("openInNewTab"), "open", () => openItemInNewTab(item)),
+      sidepanelMenuItem(tr("restore"), "restore", () => restoreItems([item.id])),
+      sidepanelMenuItem(tr("purge"), "trash", () => purgeItems([item.id]), true)
+    );
+  } else {
+    menu.append(
+      sidepanelMenuItem(tr("openInNewTab"), "open", () => openItemInNewTab(item)),
+      sidepanelMenuItem(tr("itemEdit"), "pencil", () => editItem(item)),
+      sidepanelMenuItem(tr("delete"), "trash", () => deleteItem(item.id), true)
+    );
+  }
   document.body.append(menu);
   itemContextMenu = menu;
 
@@ -1198,6 +1207,8 @@ function sidepanelMenuItem(label, icon, onPick, danger = false) {
   const paths = {
     open: "M14 5h5v5M19 5l-8 8M17 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h5",
     pencil: "M4 20h4L20 8l-4-4L4 16zM14 6l4 4",
+    // 逆时针回转箭头：从回收站捞回来。
+    restore: "M4 9h9a5.5 5.5 0 1 1 0 11H8M4 9l4-4M4 9l4 4",
     trash: "M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m3 0-1 13H7L6 7"
   };
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -1263,7 +1274,11 @@ function syncEmptyText() {
   if (!title || !hint) return;
   let titleKey = "sideEmptyTitle";
   let hintKey = "sideEmptyHint";
-  if (query) {
+  // 回收站是空的：这不是「还没有添加的网页」，别让人以为收藏丢了。
+  if (activeProject === "trash") {
+    titleKey = "trashEmptyTitle";
+    hintKey = "trashEmptyHint";
+  } else if (query) {
     const inboxOnly = searchingInboxOnly();
     titleKey = inboxOnly ? "noInboxMatches" : "noMatches";
     // 侧栏的「未读 / 已读」在搜索框**下面**，完整界面的那句「切换顶部的阅读状态筛选」
@@ -1277,7 +1292,12 @@ function syncEmptyText() {
 function render() {
   // 只要画得出东西（秒开缓存也好、真数据也好），骨架屏就完成使命了。
   hideBootPlaceholder();
+  const trashMode = activeProject === "trash";
   const visible = items.filter((item) => {
+    // 回收站是独立池子：只列已删的，不看项目筛选、也不看归档。
+    if (trashMode) return !!item.deletedAt;
+    // 进了回收站的条目在其它视图里一律不出现。
+    if (item.deletedAt) return false;
     // 归档项目里的收藏在任何视图下都不出现。
     if (archivedProjectIds.has(item.projectId)) return false;
     // 搜索默认是全局的（和完整页同一个规矩）：搜索框里有字时一律在「全部收藏」里找，
@@ -1296,7 +1316,10 @@ function render() {
     return matchesProject && matchesFilter && (!query || text.includes(query));
   });
   // 全屏那边选了「自定义顺序」并拖过卡片 —— 侧栏用同一份顺序，两边看到的先后一致。
-  if (sortMode === "custom") {
+  if (trashMode) {
+    // 回收站按「删得多近」排，刚删的在最上面。
+    visible.sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0));
+  } else if (sortMode === "custom") {
     const rank = new Map((orders[activeProject || "all"] || []).map((id, index) => [id, index]));
     visible.sort((a, b) => {
       const ra = rank.has(a.id) ? rank.get(a.id) : Number.MAX_SAFE_INTEGER;
@@ -1307,7 +1330,9 @@ function render() {
   }
   const token = ++renderToken;
   renderComplete = false;   // 这一轮还没画完，先别拿半张列表的坐标去做定位
-  document.querySelector("#itemCount").textContent = tr("cardCount", { n: visible.length });
+  document.querySelector("#itemCount").textContent = trashMode
+    ? tr("trashCount", { count: visible.length })
+    : tr("cardCount", { n: visible.length });
   syncCloseTabsButton();
 
   // 已经不在列表里的卡片先撤掉（删掉的收藏要立刻从界面消失）。
@@ -1488,17 +1513,22 @@ function saveLocateDiag(record) {
 function renderProjectFilters() {
   const counts = new Map();
   let unfiled = 0;
+  let trashed = 0;
   for (const item of items) {
+    // 回收站里的不算进任何项目计数，也不属于「等待整理」。
+    if (item.deletedAt) { trashed += 1; continue; }
     if (item.projectId) counts.set(item.projectId, (counts.get(item.projectId) || 0) + 1);
     else unfiled += 1;
   }
   const container = document.querySelector("#projectFilters");
   container.replaceChildren();
-  // 侧栏只保留「等待整理 + 具体项目」：它陪伴当前阅读范围，不承担全库总览。
+  // 侧栏只保留「等待整理 + 具体项目 + 回收站」：它陪伴当前阅读范围，不承担全库总览。
   // 「等待整理」和普通项目走完全相同的点击、存储与跨视图同步逻辑。
   const choices = [
     { id: "unfiled", name: tr("inbox"), count: unfiled },
-    ...projects.map((project) => ({ ...project, count: counts.get(project.id) || 0 }))
+    ...projects.map((project) => ({ ...project, count: counts.get(project.id) || 0 })),
+    // 回收站排在最后：它不是常用的去处，但删完东西得有个地方能找回来。
+    { id: "trash", name: tr("trash"), count: trashed }
   ];
   choices.forEach((choice) => {
     const button = document.createElement("button");
@@ -1508,6 +1538,8 @@ function renderProjectFilters() {
     name.textContent = choice.name;
     const count = document.createElement("strong");
     count.textContent = choice.count;
+    // 回收站空着的时候不挂一个「0」：那看起来像还有事没做。
+    if (choice.id === "trash" && !choice.count) count.hidden = true;
     button.append(name, count);
     button.addEventListener("click", () => {
       activeProject = normalizeProject(choice.id);
@@ -1545,7 +1577,7 @@ function ensureActiveProjectVisible() {
 }
 
 function normalizeProject(projectId) {
-  if (projectId === "unfiled") return "unfiled";
+  if (projectId === "unfiled" || projectId === "trash") return projectId;
   // 「全部项目」只属于全屏图板总览；侧栏没有这个范围，收到 all 或失效项目时
   // 回到「等待整理」，保证始终有一个真实可见的目录处于选中状态。
   return projects.some((project) => project.id === projectId) ? projectId : "unfiled";
@@ -1556,6 +1588,7 @@ function normalizeProject(projectId) {
 // 想一次收干净，又不想把整理好的收藏一起删掉。这边只是把入口搬到侧栏 ——
 // 人正在读某一篇、顺手想收尾的时候，不用特地打开收藏库。
 function activeProjectLabel() {
+  if (activeProject === "trash") return tr("trash");
   if (activeProject === "unfiled") return tr("inbox");
   const project = projects.find((entry) => entry.id === activeProject);
   return project ? project.name : tr("inbox");
@@ -1569,8 +1602,9 @@ function projectScopeItems(projectId) {
 
 function syncCloseTabsButton() {
   // 侧栏不会有「全部项目 / 归档」（normalizeProject 把它们折回「等待整理」了），
-  // 所以这颗按钮平时一直在。两个判断是护栏：以后真把图板总览搬进来，范围说不清时不显示。
-  closeTabsButton.hidden = activeProject === "all" || activeProject === "archive";
+  // 所以这颗按钮平时一直在。三个判断是护栏：以后真把图板总览搬进来，范围说不清时不显示。
+  // 回收站同理——它不是一个项目的范围，也谈不上「把这个范围里开着的都关掉」。
+  closeTabsButton.hidden = activeProject === "all" || activeProject === "archive" || activeProject === "trash";
 }
 
 async function closeTabsForActiveProject() {
@@ -1760,7 +1794,11 @@ function createItem(item) {
   const fragment = template.content.cloneNode(true);
   const article = fragment.querySelector(".item");
   article.dataset.id = item.id;
-  article.draggable = true;
+  // 回收站里的卡片不参与拖拽排序，也不给「标已读」——它已经是个删掉的条目，
+  // 在那儿只能恢复或彻底删除。
+  const trashed = !!item.deletedAt;
+  article.draggable = !trashed;
+  if (trashed) article.classList.add("is-trashed");
   const openLink = fragment.querySelector(".open-item");
   openLink.href = safeTarget(item.url) || "#";
   fragment.querySelector("h2").textContent = item.title;
@@ -1943,8 +1981,9 @@ async function updateItem(id, patch) {
 async function deleteItem(id) {
   const target = items.find((entry) => entry.id === id);
   if (!target) return;
-  // 删除是没法撤销的，删之前一定问一句（弹窗组件是 defer 加载的，
-  // 万一还没就绪就直接删，别把删除卡死）。
+  // 回收站里再点一次删除，意思就是「真的不要了」：走彻底删除那套确认。
+  if (target.deletedAt) return purgeItems([id]);
+  // 弹窗组件是 defer 加载的，万一还没就绪就先等它，别把删除卡死。
   const raw = (target.title || "").trim() || tr("itemFallback");
   const title = raw.length > 26 ? `${raw.slice(0, 26)}…` : raw;
   try { await ensureDialogLoaded(); }
@@ -1958,19 +1997,49 @@ async function deleteItem(id) {
   const notice = globalThis.LaterOnTabs?.noticeGroups?.(exact, fuzzy) || [];
   const confirmed = await window.LaterOnDialog.confirm({
     tone: "danger", title: tr("deleteItemTitle", { title }),
-    message: tr("deleteCannotUndo"),
+    // 现在不是真删：先进回收站，语气也跟着换成「还能捞回来」。
+    message: tr("deleteMovesToTrash"),
     notice: notice.length ? notice : undefined,
     confirmText: tr("delete")
   });
   if (!confirmed) return;
   if (!await commitItemMutation("delete", [id])) return;
-  // 侧栏用顶部状态条报结果（它没有全屏那套 toast），关掉标签页这件事也要说一声。
-  if (!closeTabsOnDelete) return;
+  // 侧栏用顶部状态条报结果（它没有全屏那套带按钮的 toast），但删除本身一定要有回音。
+  if (!closeTabsOnDelete) { status.textContent = tr("itemMovedToTrash"); return; }
   // 只关网址对得上的那档：标题兜底那档只是猜的，弹窗里已经列出来给人看过、也没打算关。
   // 重新查一遍是因为确认框可能开了十几秒，中途自己关掉的标签页不该算进「关掉了 N 个」。
   const fresh = await globalThis.LaterOnTabs?.inspect?.([target]);
   const closed = (await globalThis.LaterOnTabs?.closeTabs?.(fresh?.exact || [])) || 0;
-  if (closed) status.textContent = tr("itemDeletedAndClosed", { n: closed });
+  status.textContent = closed ? tr("itemTrashedAndClosed", { n: closed }) : tr("itemMovedToTrash");
+}
+
+// 从回收站捞回来。
+async function restoreItems(ids) {
+  const list = [...ids];
+  if (!list.length) return null;
+  const result = await commitItemMutation("restore", list);
+  if (!result) return null;
+  status.textContent = tr("restoredN", { n: result.affected });
+  return result;
+}
+
+// 彻底删除：真抹数据，同步层会写墓碑，其他设备的回收站里也会消失。
+async function purgeItems(ids) {
+  const list = [...ids];
+  if (!list.length) return null;
+  try { await ensureDialogLoaded(); }
+  catch { status.textContent = tr("operationFailed"); return null; }
+  const confirmed = await window.LaterOnDialog.confirm({
+    tone: "danger",
+    title: tr("purgeConfirmTitle", { n: list.length }),
+    message: tr("purgeCannotUndo"),
+    confirmText: tr("purge")
+  });
+  if (!confirmed) return null;
+  const result = await commitItemMutation("purge", list);
+  if (!result) return null;
+  status.textContent = tr("trashPurged", { n: result.affected });
+  return result;
 }
 
 // 30 天以前的时间用 Intl 格式化；按语言缓存实例，别每张卡 new 一次。

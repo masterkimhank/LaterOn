@@ -133,7 +133,13 @@ const dialogNotice = () => {
       .map((li) => li.querySelector(".lod-notice-name")?.textContent || li.textContent)
   }));
 };
-const toastText = () => document.querySelector("#toast").textContent;
+// 提示条现在还带一个「撤销」按钮，按钮文字也会进 textContent。
+// 只取提示语本身的文本节点，按钮另用 toastAction() 查——否则每条文案断言都得写 startsWith。
+const toastText = () => {
+  const node = document.querySelector("#toast");
+  return [...node.childNodes].filter((child) => child.nodeType === 3).map((child) => child.textContent).join("");
+};
+const toastAction = () => document.querySelector("#toast .toast-action")?.textContent || "";
 const clickDelete = (id) => click(cardOf(id).querySelector(".delete"));
 async function confirmDialog(ok = true) {
   await tick(40);
@@ -195,17 +201,18 @@ async function setSwitch(on) {
     removedTabIds.slice().sort().join(",") === "11,12", removedTabIds.join(","));
   check("别的网址（13）和扩展自己的页面（14）没被误关",
     !removedTabIds.includes(13) && !removedTabIds.includes(14), removedTabIds.join(","));
-  check("收藏本身被删掉了", !store.laterOnItems.some((entry) => entry.id === "a1"));
-  check("提示语写明关了几个标签页", toastText() === "已删除网页，并关闭了 2 个标签页", toastText());
+  check("条目进了回收站", !!store.laterOnItems.find((entry) => entry.id === "a1")?.deletedAt);
+  check("提示语写明关了几个标签页", toastText() === "已移入回收站，并关闭了 2 个标签页", toastText());
+  check("提示上给了撤销入口", toastAction() === "撤销", toastAction());
 
   console.log("\n── 没有开着的标签页时不多说废话 ──");
   removedTabIds.length = 0;
   clickDelete("a2");
   await tick(40);
-  check("确认框只说「删除后无法恢复」且没有清单",
-    dialogMessage() === "删除后无法恢复。" && dialogNotice().length === 0, dialogMessage());
+  check("确认框只说「会先进回收站」且没有清单",
+    dialogMessage() === "会先放进回收站，之后可以再恢复。" && dialogNotice().length === 0, dialogMessage());
   await confirmDialog(true);
-  check("提示语还是原来那句", toastText() === "已删除网页", toastText());
+  check("提示语还是原来那句", toastText() === "已移入回收站", toastText());
   check("没有调用关标签页", removedTabIds.length === 0, removedTabIds.join(","));
 
   console.log("\n── 批量删除：按整个选中集合算 ──");
@@ -226,7 +233,7 @@ async function setSwitch(on) {
   await confirmDialog(true);
   check("a3 那个标签页被关掉了", removedTabIds.join(",") === "21", removedTabIds.join(","));
   check("批量提示语同时报篇数和标签数",
-    toastText() === "已删除 1 篇，并关闭了 1 个标签页", toastText());
+    toastText() === "已把 1 篇移入回收站，并关闭了 1 个标签页", toastText());
 
   console.log("\n── 开关关掉后立刻恢复原样（不用刷新） ──");
   store.laterOnItems = [item("b1", { title: "标题四" })];
@@ -244,9 +251,9 @@ async function setSwitch(on) {
   check("（准备）确认框确实弹出来了", !!dialog());
   check("关掉开关后确认框不再列清单", dialogNotice().length === 0, JSON.stringify(dialogNotice()));
   await confirmDialog(true);
-  check("收藏被删掉了", !store.laterOnItems.some((entry) => entry.id === "b1"), store.laterOnItems.map((entry) => entry.id).join(","));
+  check("条目进了回收站", !!store.laterOnItems.find((entry) => entry.id === "b1")?.deletedAt, store.laterOnItems.map((entry) => entry.id).join(","));
   check("也没有真的去关", removedTabIds.length === 0, removedTabIds.join(","));
-  check("提示语是原来那句", toastText() === "已删除网页", toastText());
+  check("提示语是原来那句", toastText() === "已移入回收站", toastText());
 
   console.log("\n── 网址变了、只有标题相同：列出来，但不关 ──");
   // 有些站点每次打开的网址都不一样（分页、SPA 路由、短链）。这种情况只能靠标题认，
@@ -271,7 +278,7 @@ async function setSwitch(on) {
   check("这一组的标题说明了「不会关闭」", /不会关闭/.test(fuzzyGroup[0]?.title || ""), fuzzyGroup[0]?.title);
   await confirmDialog(true);
   check("确认后也没有关它（宁可漏关，不能误关）", removedTabIds.length === 0, removedTabIds.join(","));
-  check("收藏本身还是被删掉了", !store.laterOnItems.some((entry) => entry.id === "c1"));
+  check("条目也进了回收站", !!store.laterOnItems.find((entry) => entry.id === "c1")?.deletedAt);
 
   console.log("\n── 页面错误 ──");
   check("整个过程没有出现未捕获的错误", errors.length === 0, errors.join(" | "));
