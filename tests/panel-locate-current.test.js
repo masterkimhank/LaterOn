@@ -27,6 +27,17 @@ const check = (label, ok, extra = "") => {
   if (!ok) failures += 1;
 };
 const tick = (ms = 20) => new Promise((resolve) => setTimeout(resolve, ms));
+// 等条件成立，而不是拿固定 sleep 去赌「渲染 + 420ms 复查链」刚好在预算内跑完。
+// 定位复查链最坏要 2 次 × 420ms，机器一忙就会顶到 1500ms 的边（本文件曾因此偶发报红）。
+// 断言本身不变：等不到就返回 false，该红还是红。
+const waitUntil = async (predicate, ms = 4000, step = 25) => {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (predicate()) return true;
+    await new Promise((resolve) => setTimeout(resolve, step));
+  }
+  return predicate();
+};
 
 const now = Date.now();
 const CARD_H = 100;      // 一张卡片占的高度（含间距）
@@ -212,7 +223,8 @@ function bigStore(currentIndex, overrides = {}) {
   // ═══ ② 平滑滚动被浏览器丢掉了 → 复查后补一次，把人送到 ═══
   console.log("\n── ② 平滑滚动被丢掉 → 复查后补一次并滚到位 ──");
   const envB = boot({ store: bigStore(45), dropSmooth: true });
-  await tick(1500);
+  // 平滑滚动会被丢掉，只有「复查后补的那次瞬间滚动」才能把它送进视野 —— 等它出现。
+  await waitUntil(() => envB.scrollCalls.some((call) => call.behavior === "auto"));
   const smooth = envB.scrollCalls.filter((call) => call.behavior === "smooth");
   const instant = envB.scrollCalls.filter((call) => call.behavior === "auto");
   check("先尝试了平滑滚动", smooth.length >= 1, `${smooth.length} 次`);
@@ -240,7 +252,7 @@ function bigStore(currentIndex, overrides = {}) {
   await tick(1500);
   check("先定位在靠前那篇", envE.isHighlighted("a-2"));
   await envE.window.chrome.storage.local.set({ laterOnCurrentItem: "a-50" });
-  await tick(1200);
+  await waitUntil(() => envE.isHighlighted("a-50") && envE.inView("a-50"));
   check("高亮换到了新那篇", envE.isHighlighted("a-50") && !envE.isHighlighted("a-2"));
   check("并且滚到了新那篇", envE.inView("a-50") === true, String(envE.inView("a-50")));
 
